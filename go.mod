@@ -1,6 +1,6 @@
 module github.com/SilkageNet/codex-switch
 
-go 1.26.5
+go 1.26.7
 
 require (
 	github.com/minio/selfupdate v0.6.0
