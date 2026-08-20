@@ -1,0 +1,19 @@
+# Build outputs
+/dist/
+/bin/
+/codex-switch
+/codex-switch.exe
+
+# Local and editor state
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Local test artifacts and secrets
+coverage.out
+*.log
+*.tmp
+*.enc
+auth.json
+.env

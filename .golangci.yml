@@ -1,0 +1,36 @@
+# golangci-lint v2 配置。
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - revive
+    - misspell
+    - unconvert
+    - unparam
+    - errorlint
+    - nakedret
+    - bodyclose
+  settings:
+    revive:
+      rules:
+        - name: error-strings
+        - name: context-as-argument
+        - name: indent-error-flow
+        - name: unreachable-code
+        - name: superfluous-else
+    nakedret:
+      max-func-lines: 30
+  exclusions:
+    rules:
+      - linters: [errcheck]
+        source: "fmt\\.(Fprint|Fprintf|Fprintln)\\("
+      - path: _test\.go
+        linters: [errcheck, unparam]
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

@@ -1,0 +1,32 @@
+name: Bug report
+description: Report a reproducible problem without credentials
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Never attach auth.json, tokens, vault files, or unreviewed diagnostics.
+  - type: input
+    id: version
+    attributes:
+      label: codex-switch version
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
