@@ -23,7 +23,12 @@ jobs:
           cache: true
       - name: Verify formatting
         shell: bash
-        run: test -z "$(gofmt -l .)"
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "$unformatted"
+            exit 1
+          fi
       - name: Vet
         run: go vet ./...
       - name: Test
@@ -41,7 +46,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - uses: golangci/golangci-lint-action@v8
+      - uses: golangci/golangci-lint-action@v9
         with:
           version: v2.12.2
       - name: Secret scan
@@ -58,4 +63,4 @@ jobs:
           go-version-file: go.mod
           cache: true
       - run: go install golang.org/x/vuln/cmd/govulncheck@latest
-      - run: govulncheck ./...
+      - run: bash scripts/govulncheck.sh

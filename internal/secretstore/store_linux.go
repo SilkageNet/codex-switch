@@ -13,7 +13,7 @@ type linuxStore struct{}
 
 func Open() (Store, error) {
 	if _, err := exec.LookPath("secret-tool"); err != nil {
-		return nil, fmt.Errorf("Secret Service client secret-tool is unavailable: %w", err)
+		return nil, fmt.Errorf("secret-tool client for Secret Service is unavailable: %w", err)
 	}
 	return linuxStore{}, nil
 }
