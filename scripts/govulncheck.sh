@@ -8,12 +8,13 @@ set +e
 govulncheck ./... >"$report_file" 2>&1
 scan_status=$?
 set -e
-cat "$report_file"
 
 if [ "$scan_status" -eq 0 ]; then
+  cat "$report_file"
   exit 0
 fi
 if [ "$scan_status" -ne 3 ]; then
+  cat "$report_file"
   exit "$scan_status"
 fi
 
@@ -24,9 +25,11 @@ GO-2026-6090
 GO-2026-6218'
 
 if [ "$found_ids" = "$allowed_ids" ]; then
-  echo "Recognized Go 1.26.5 standard-library advisories awaiting the published Go 1.26.6 fix."
+  echo "Recognized Go 1.26.5 standard-library advisories awaiting the published Go 1.26.6 fix:"
+  printf '%s\n' "$found_ids"
   exit 0
 fi
 
+cat "$report_file"
 echo "Vulnerability findings differ from the narrowly documented temporary exception." >&2
 exit "$scan_status"
