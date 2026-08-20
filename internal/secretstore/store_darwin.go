@@ -25,12 +25,18 @@ func (darwinStore) Set(key, value string) error {
 	if err := validateKey(key); err != nil {
 		return err
 	}
-	command := exec.Command("security", "add-generic-password", "-U", "-a", target(key), "-s", serviceName, "-w")
-	command.Stdin = strings.NewReader(value + "\n")
+	command := newDarwinSetCommand(key, value)
 	if output, err := command.CombinedOutput(); err != nil {
 		return fmt.Errorf("write macOS Keychain entry: %s: %w", strings.TrimSpace(string(output)), err)
 	}
 	return nil
+}
+
+func newDarwinSetCommand(key, value string) *exec.Cmd {
+	// The security CLI treats a trailing -w as a request to prompt twice on a
+	// terminal; it does not consume a password from stdin. Supply the value as
+	// the argument to -w so unattended initialization stores the generated key.
+	return exec.Command("security", "add-generic-password", "-U", "-a", target(key), "-s", serviceName, "-w", value)
 }
 
 func (darwinStore) Get(key string) (string, error) {

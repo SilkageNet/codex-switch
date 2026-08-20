@@ -41,7 +41,10 @@ focuses on:
 
 ## Platform credential-store adapters
 
-The macOS implementation invokes the system `security` utility without a shell
-and sends new vault keys through standard input rather than the process argument
-vector. Linux similarly sends values to `secret-tool` over standard input.
-Windows calls the native Credential Manager API directly.
+The macOS implementation invokes the system `security` utility without a shell.
+Because that utility treats `-w` without a value as an interactive prompt rather
+than reading standard input, the adapter supplies the vault key directly to
+`-w`. The value can therefore be visible briefly to processes running as the
+same operating-system user, which is inside this project's trust boundary.
+Linux sends values to `secret-tool` over standard input. Windows calls the
+native Credential Manager API directly.
