@@ -7,10 +7,11 @@ import (
 )
 
 type Paths struct {
-	Root    string
-	Vault   string
-	State   string
-	Journal string
+	Root       string
+	Vault      string
+	State      string
+	Journal    string
+	UsageCache string
 }
 
 func ResolvePaths(override string) (Paths, error) {
@@ -30,10 +31,11 @@ func ResolvePaths(override string) (Paths, error) {
 		return Paths{}, fmt.Errorf("resolve codex-switch home: %w", err)
 	}
 	return Paths{
-		Root:    abs,
-		Vault:   filepath.Join(abs, "vault.v1.enc"),
-		State:   filepath.Join(abs, "state.json"),
-		Journal: filepath.Join(abs, "switch.journal.json"),
+		Root:       abs,
+		Vault:      filepath.Join(abs, "vault.v1.enc"),
+		State:      filepath.Join(abs, "state.json"),
+		Journal:    filepath.Join(abs, "switch.journal.json"),
+		UsageCache: filepath.Join(abs, "usage-cache.v1.json"),
 	}, nil
 }
 

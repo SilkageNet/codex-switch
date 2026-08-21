@@ -27,10 +27,21 @@ The command creates a timestamped backup before making a surgical top-level
 
 ## Codex releases
 
-Development began against Codex CLI `0.148.0-alpha.15`. The project does not use
-that version's private OAuth endpoints. Login is delegated to the installed
-official CLI, reducing the compatibility surface to its documented cached
-authentication shape.
+Development began against Codex CLI `0.148.0-alpha.15`; isolated account-usage
+queries were validated with `0.148.0-alpha.21`. The project does not use private
+OAuth or usage endpoints. Login is delegated to the installed official CLI, and
+usage is read through the documented stable Codex App Server protocol.
+
+Usage querying initializes `codex app-server` and calls:
+
+- `account/read`
+- `account/rateLimits/read`
+- `account/usage/read`
+
+If one usage method is unavailable, the other is still cached and marked
+partial. If both are unavailable, update the installed Codex client. These
+methods require a ChatGPT/Codex service login; API-key-only and Amazon Bedrock
+profiles are not supported by `codex-switch`.
 
 On an unknown or malformed schema, `codex-switch` stops before overwriting the
 live file. Add a redacted fixture and a versioned adapter before broadening the
@@ -39,5 +50,7 @@ accepted shape.
 ## Upstream references
 
 - OpenAI authentication documentation: https://developers.openai.com/codex/auth
+- OpenAI Codex App Server documentation:
+  https://learn.chatgpt.com/docs/app-server
 - CC Switch managed Codex OAuth implementation:
   https://github.com/farion1231/cc-switch/tree/v3.20.0

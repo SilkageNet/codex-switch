@@ -8,15 +8,19 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
+	"text/tabwriter"
 	"time"
 
+	"github.com/SilkageNet/codex-switch/internal/accountusage"
 	"github.com/SilkageNet/codex-switch/internal/atomicfile"
 	"github.com/SilkageNet/codex-switch/internal/authschema"
 	"github.com/SilkageNet/codex-switch/internal/cliupdate"
 	"github.com/SilkageNet/codex-switch/internal/codexhome"
 	"github.com/SilkageNet/codex-switch/internal/codexlogin"
+	"github.com/SilkageNet/codex-switch/internal/codexusage"
 	appconfig "github.com/SilkageNet/codex-switch/internal/config"
 	"github.com/SilkageNet/codex-switch/internal/doctor"
 	"github.com/SilkageNet/codex-switch/internal/launcher"
@@ -47,15 +51,26 @@ type runtimeState struct {
 }
 
 type accountView struct {
-	ID              string    `json:"id"`
-	Alias           string    `json:"alias"`
-	AccountID       string    `json:"accountId"`
-	WorkspaceID     string    `json:"workspaceId,omitempty"`
-	Email           string    `json:"email,omitempty"`
-	Source          string    `json:"source"`
-	Active          bool      `json:"active"`
-	AuthenticatedAt time.Time `json:"authenticatedAt"`
-	LastUsedAt      time.Time `json:"lastUsedAt,omitempty"`
+	ID              string     `json:"id"`
+	Alias           string     `json:"alias"`
+	AccountID       string     `json:"accountId"`
+	WorkspaceID     string     `json:"workspaceId,omitempty"`
+	Email           string     `json:"email,omitempty"`
+	Source          string     `json:"source"`
+	Active          bool       `json:"active"`
+	AuthenticatedAt time.Time  `json:"authenticatedAt"`
+	LastUsedAt      time.Time  `json:"lastUsedAt,omitempty"`
+	Usage           *usageView `json:"usage,omitempty"`
+}
+
+type usageView struct {
+	Status     string                 `json:"status"`
+	FetchedAt  time.Time              `json:"fetchedAt,omitempty"`
+	PlanType   string                 `json:"planType,omitempty"`
+	RateLimits *codexusage.RateLimits `json:"rateLimits,omitempty"`
+	TokenUsage *codexusage.TokenUsage `json:"tokenUsage,omitempty"`
+	Partial    []string               `json:"partial,omitempty"`
+	Error      string                 `json:"error,omitempty"`
 }
 
 func NewCommand(version string) *cobra.Command {
@@ -132,6 +147,7 @@ func newAccountCommand(options *Options) *cobra.Command {
 		newAccountImportCommand(options),
 		newAccountAddCommand(options, false),
 		newAccountListCommand(options),
+		newAccountUsageCommand(options),
 		newAccountShowCommand(options),
 		newAccountRenameCommand(options),
 		newAccountRemoveCommand(options),
@@ -208,10 +224,15 @@ func newAccountAddCommand(options *Options, reauth bool) *cobra.Command {
 }
 
 func newAccountListCommand(options *Options) *cobra.Command {
-	return &cobra.Command{
+	var refresh bool
+	var cached bool
+	command := &cobra.Command{
 		Use:   "list",
-		Short: "List saved accounts",
+		Short: "List saved accounts and their usage",
 		RunE: func(*cobra.Command, []string) error {
+			if refresh && cached {
+				return errors.New("--refresh and --cached cannot be used together")
+			}
 			runtime, err := options.loadRuntime(false)
 			if err != nil {
 				return err
@@ -221,9 +242,41 @@ func newAccountListCommand(options *Options) *cobra.Command {
 				return err
 			}
 			state, _ := appstate.Load(runtime.paths.State)
+			cache, err := runtime.usageService(options.Version).Cached()
+			if err != nil {
+				return err
+			}
+			refreshIDs := make([]string, 0, len(data.Profiles))
+			if !cached {
+				for _, profile := range data.Profiles {
+					snapshot, ok := cache.Profiles[profile.ID]
+					if refresh || !ok || usageStatus(snapshot.FetchedAt, time.Now()) != "fresh" {
+						refreshIDs = append(refreshIDs, profile.ID)
+					}
+				}
+			}
+			refreshErrors := map[string]string{}
+			if len(refreshIDs) > 0 {
+				results, refreshErr := runtime.usageService(options.Version).Refresh(context.Background(), refreshIDs)
+				if refreshErr != nil {
+					for _, id := range refreshIDs {
+						refreshErrors[id] = refreshErr.Error()
+					}
+				} else {
+					for id, result := range results {
+						refreshErrors[id] = result.Error
+					}
+				}
+				cache, err = runtime.usageService(options.Version).Cached()
+				if err != nil {
+					return err
+				}
+			}
 			views := make([]accountView, 0, len(data.Profiles))
 			for _, profile := range data.Profiles {
-				views = append(views, toView(profile, profile.ID == state.ActiveProfileID))
+				view := toView(profile, profile.ID == state.ActiveProfileID)
+				view.Usage = usageFromCache(cache.Profiles, profile.ID, refreshErrors[profile.ID], time.Now())
+				views = append(views, view)
 			}
 			if options.JSON {
 				return options.render(views, "")
@@ -232,6 +285,8 @@ func newAccountListCommand(options *Options) *cobra.Command {
 				_, _ = fmt.Fprintln(options.Output, "No accounts saved.")
 				return nil
 			}
+			writer := tabwriter.NewWriter(options.Output, 0, 4, 2, ' ', 0)
+			_, _ = fmt.Fprintln(writer, "\tALIAS\tIDENTITY\tPLAN\tLIMITS\tTOKENS\tUPDATED")
 			for _, view := range views {
 				marker := " "
 				if view.Active {
@@ -241,11 +296,114 @@ func newAccountListCommand(options *Options) *cobra.Command {
 				if identity == "" {
 					identity = view.AccountID
 				}
-				_, _ = fmt.Fprintf(options.Output, "%s %-20s %s\n", marker, view.Alias, identity)
+				plan, limits, tokens, updated := summarizeUsage(view.Usage, time.Now())
+				_, _ = fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", marker, view.Alias, identity, plan, limits, tokens, updated)
+			}
+			return writer.Flush()
+		},
+	}
+	command.Flags().BoolVar(&refresh, "refresh", false, "refresh every account before listing")
+	command.Flags().BoolVar(&cached, "cached", false, "show cached usage without contacting Codex services")
+	return command
+}
+
+func newAccountUsageCommand(options *Options) *cobra.Command {
+	var all bool
+	var cached bool
+	command := &cobra.Command{
+		Use:   "usage [alias]",
+		Short: "Show account limits and token usage without switching",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			if all && len(args) > 0 {
+				return errors.New("an alias and --all cannot be used together")
+			}
+			runtime, err := options.loadRuntime(false)
+			if err != nil {
+				return err
+			}
+			data, err := runtime.manager.Load()
+			if err != nil {
+				return err
+			}
+			state, _ := appstate.Load(runtime.paths.State)
+			profiles := make([]vault.Profile, 0, len(data.Profiles))
+			switch {
+			case all:
+				profiles = append(profiles, data.Profiles...)
+			case len(args) == 1:
+				profile, findErr := data.Find(args[0])
+				if findErr != nil {
+					return findErr
+				}
+				profiles = append(profiles, *profile)
+			default:
+				if state.ActiveProfileID == "" {
+					return errors.New("no managed account is active; pass an alias or --all")
+				}
+				profile, findErr := data.Find(state.ActiveProfileID)
+				if findErr != nil {
+					return errors.New("the active account is unmanaged; pass a saved alias")
+				}
+				profiles = append(profiles, *profile)
+			}
+			if len(profiles) == 0 {
+				return errors.New("no accounts saved")
+			}
+			refreshErrors := map[string]string{}
+			if !cached {
+				ids := make([]string, 0, len(profiles))
+				for _, profile := range profiles {
+					ids = append(ids, profile.ID)
+				}
+				results, refreshErr := runtime.usageService(options.Version).Refresh(context.Background(), ids)
+				if refreshErr != nil {
+					if len(profiles) == 1 {
+						return refreshErr
+					}
+					for _, id := range ids {
+						refreshErrors[id] = refreshErr.Error()
+					}
+				} else {
+					for id, result := range results {
+						refreshErrors[id] = result.Error
+					}
+				}
+			}
+			cache, err := runtime.usageService(options.Version).Cached()
+			if err != nil {
+				return err
+			}
+			views := make([]accountView, 0, len(profiles))
+			for _, profile := range profiles {
+				view := toView(profile, profile.ID == state.ActiveProfileID)
+				view.Usage = usageFromCache(cache.Profiles, profile.ID, refreshErrors[profile.ID], time.Now())
+				if len(profiles) == 1 && view.Usage.Status == "unavailable" {
+					if view.Usage.Error != "" {
+						return errors.New(view.Usage.Error)
+					}
+					return errors.New("no cached usage is available; retry without --cached")
+				}
+				views = append(views, view)
+			}
+			if options.JSON {
+				if len(views) == 1 {
+					return options.render(views[0], "")
+				}
+				return options.render(views, "")
+			}
+			for index, view := range views {
+				if index > 0 {
+					_, _ = fmt.Fprintln(options.Output)
+				}
+				_, _ = fmt.Fprintln(options.Output, formatUsage(view, time.Now()))
 			}
 			return nil
 		},
 	}
+	command.Flags().BoolVar(&all, "all", false, "show usage for every saved account")
+	command.Flags().BoolVar(&cached, "cached", false, "show cached usage without contacting Codex services")
+	return command
 }
 
 func newAccountShowCommand(options *Options) *cobra.Command {
@@ -698,6 +856,18 @@ func (runtime runtimeState) switcher() switcher.Service {
 	return switcher.Service{Home: runtime.home, Paths: runtime.paths, Vault: runtime.manager}
 }
 
+func (runtime runtimeState) usageService(version string) accountusage.Service {
+	return accountusage.Service{
+		Home:  runtime.home,
+		Paths: runtime.paths,
+		Vault: runtime.manager,
+		Runner: codexusage.Runner{
+			Binary:        runtime.bin,
+			ClientVersion: version,
+		},
+	}
+}
+
 func (options *Options) currentView() (accountView, error) {
 	runtime, err := options.loadRuntime(false)
 	if err != nil {
@@ -767,6 +937,233 @@ func formatView(view accountView) string {
 		return identity
 	}
 	return fmt.Sprintf("%s (%s)", view.Alias, identity)
+}
+
+func usageFromCache(cache map[string]codexusage.Snapshot, profileID, queryError string, now time.Time) *usageView {
+	snapshot, ok := cache[profileID]
+	if !ok {
+		return &usageView{Status: "unavailable", Error: queryError}
+	}
+	return &usageView{
+		Status:     usageStatus(snapshot.FetchedAt, now),
+		FetchedAt:  snapshot.FetchedAt,
+		PlanType:   snapshot.PlanType,
+		RateLimits: snapshot.RateLimits,
+		TokenUsage: snapshot.TokenUsage,
+		Partial:    snapshot.Partial,
+		Error:      queryError,
+	}
+}
+
+func usageStatus(fetchedAt, now time.Time) string {
+	if fetchedAt.IsZero() || now.Sub(fetchedAt) > time.Minute {
+		return "stale"
+	}
+	return "fresh"
+}
+
+func summarizeUsage(usage *usageView, now time.Time) (string, string, string, string) {
+	if usage == nil || usage.Status == "unavailable" {
+		return "-", "unavailable", "-", "-"
+	}
+	plan := usage.PlanType
+	if plan == "" {
+		plan = "-"
+	}
+	limits := "-"
+	if main := mainRateLimit(usage.RateLimits); main != nil {
+		parts := make([]string, 0, 2)
+		if main.Primary != nil {
+			parts = append(parts, compactWindow(main.Primary))
+		}
+		if main.Secondary != nil {
+			parts = append(parts, compactWindow(main.Secondary))
+		}
+		if len(parts) > 0 {
+			limits = strings.Join(parts, " · ")
+		}
+	}
+	tokens := "-"
+	if usage.TokenUsage != nil && usage.TokenUsage.Summary.LifetimeTokens != nil {
+		tokens = compactNumber(*usage.TokenUsage.Summary.LifetimeTokens)
+	}
+	updated := relativeTime(usage.FetchedAt, now)
+	if usage.Status == "stale" {
+		updated += " (stale)"
+	}
+	if usage.Error != "" {
+		updated += " (error)"
+	}
+	return plan, limits, tokens, updated
+}
+
+func formatUsage(view accountView, now time.Time) string {
+	var output strings.Builder
+	output.WriteString(formatView(view))
+	if view.Active {
+		output.WriteString(" [active]")
+	}
+	usage := view.Usage
+	if usage == nil || usage.Status == "unavailable" {
+		output.WriteString("\nUsage: unavailable")
+		if usage != nil && usage.Error != "" {
+			output.WriteString("\nError: ")
+			output.WriteString(usage.Error)
+		}
+		return output.String()
+	}
+	plan := usage.PlanType
+	if plan == "" {
+		plan = "unknown"
+	}
+	fmt.Fprintf(&output, "\nPlan: %s", plan)
+	fmt.Fprintf(&output, "\nUpdated: %s (%s)", usage.FetchedAt.Local().Format(time.RFC3339), usage.Status)
+	if usage.RateLimits != nil {
+		output.WriteString("\nLimits:")
+		limits := usage.RateLimits.RateLimitsByLimitID
+		if len(limits) == 0 {
+			limits = map[string]codexusage.RateLimitSnapshot{"codex": usage.RateLimits.RateLimits}
+		}
+		keys := make([]string, 0, len(limits))
+		for key := range limits {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			limit := limits[key]
+			label := key
+			if limit.LimitName != nil && *limit.LimitName != "" {
+				label = *limit.LimitName
+			}
+			windows := make([]string, 0, 2)
+			if limit.Primary != nil {
+				windows = append(windows, detailedWindow(limit.Primary, now))
+			}
+			if limit.Secondary != nil {
+				windows = append(windows, detailedWindow(limit.Secondary, now))
+			}
+			value := "unavailable"
+			if len(windows) > 0 {
+				value = strings.Join(windows, "; ")
+			}
+			fmt.Fprintf(&output, "\n  %s: %s", label, value)
+		}
+	}
+	if usage.TokenUsage != nil {
+		summary := usage.TokenUsage.Summary
+		parts := make([]string, 0, 5)
+		if summary.LifetimeTokens != nil {
+			parts = append(parts, compactNumber(*summary.LifetimeTokens)+" lifetime")
+		}
+		if summary.PeakDailyTokens != nil {
+			parts = append(parts, compactNumber(*summary.PeakDailyTokens)+" peak/day")
+		}
+		if summary.CurrentStreakDays != nil {
+			parts = append(parts, fmt.Sprintf("%dd current streak", *summary.CurrentStreakDays))
+		}
+		if summary.LongestStreakDays != nil {
+			parts = append(parts, fmt.Sprintf("%dd longest streak", *summary.LongestStreakDays))
+		}
+		if summary.LongestRunningTurnSec != nil {
+			parts = append(parts, (time.Duration(*summary.LongestRunningTurnSec)*time.Second).String()+" longest turn")
+		}
+		if len(parts) > 0 {
+			output.WriteString("\nTokens: ")
+			output.WriteString(strings.Join(parts, "; "))
+		}
+	}
+	if len(usage.Partial) > 0 {
+		output.WriteString("\nPartial: ")
+		output.WriteString(strings.Join(usage.Partial, ", "))
+	}
+	if usage.Error != "" {
+		output.WriteString("\nWarning: ")
+		output.WriteString(usage.Error)
+	}
+	return output.String()
+}
+
+func mainRateLimit(limits *codexusage.RateLimits) *codexusage.RateLimitSnapshot {
+	if limits == nil {
+		return nil
+	}
+	if value, ok := limits.RateLimitsByLimitID["codex"]; ok {
+		copy := value
+		return &copy
+	}
+	copy := limits.RateLimits
+	return &copy
+}
+
+func compactWindow(window *codexusage.RateLimitWindow) string {
+	duration := "limit"
+	if window.WindowDurationMins != nil {
+		duration = compactMinutes(*window.WindowDurationMins)
+	}
+	return fmt.Sprintf("%s %d%%", duration, window.UsedPercent)
+}
+
+func detailedWindow(window *codexusage.RateLimitWindow, now time.Time) string {
+	value := compactWindow(window) + " used"
+	if window.ResetsAt != nil {
+		reset := time.Unix(*window.ResetsAt, 0)
+		if reset.After(now) {
+			value += ", resets in " + compactDuration(reset.Sub(now))
+		} else {
+			value += ", reset pending"
+		}
+	}
+	return value
+}
+
+func compactMinutes(minutes int64) string {
+	if minutes%(60*24) == 0 {
+		return fmt.Sprintf("%dd", minutes/(60*24))
+	}
+	if minutes%60 == 0 {
+		return fmt.Sprintf("%dh", minutes/60)
+	}
+	return fmt.Sprintf("%dm", minutes)
+}
+
+func compactDuration(duration time.Duration) string {
+	if duration < 0 {
+		duration = 0
+	}
+	if duration >= 24*time.Hour {
+		return fmt.Sprintf("%dd %dh", int(duration/(24*time.Hour)), int(duration%(24*time.Hour)/time.Hour))
+	}
+	if duration >= time.Hour {
+		return fmt.Sprintf("%dh %dm", int(duration/time.Hour), int(duration%time.Hour/time.Minute))
+	}
+	return fmt.Sprintf("%dm", int(duration/time.Minute))
+}
+
+func compactNumber(value int64) string {
+	switch {
+	case value >= 1_000_000_000:
+		return strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.1f", float64(value)/1_000_000_000), "0"), ".") + "B"
+	case value >= 1_000_000:
+		return strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.1f", float64(value)/1_000_000), "0"), ".") + "M"
+	case value >= 1_000:
+		return strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.1f", float64(value)/1_000), "0"), ".") + "K"
+	default:
+		return strconv.FormatInt(value, 10)
+	}
+}
+
+func relativeTime(value, now time.Time) string {
+	if value.IsZero() {
+		return "never"
+	}
+	age := now.Sub(value)
+	if age < 0 {
+		age = 0
+	}
+	if age < time.Minute {
+		return "just now"
+	}
+	return compactDuration(age) + " ago"
 }
 
 func (options *Options) render(value any, text string) error {

@@ -20,6 +20,12 @@
 - `vault` encrypts all saved account profiles with XChaCha20-Poly1305.
 - `switcher` reconciles a live Codex refresh generation, prepares a journal,
   performs compare-before-replace, and records the selected profile.
+- `codexusage` runs the official Codex App Server in an isolated temporary
+  `CODEX_HOME` and reads the stable account, rate-limit, and token-usage methods.
+- `accountusage` queries up to four profiles concurrently, reconciles credential
+  refresh generations, and coordinates with switching through the same lock.
+- `usagecache` stores credential-free successful snapshots separately from the
+  encrypted vault.
 - `atomicfile` publishes complete files and refuses symlink destinations.
 - `doctor` reports only redacted, non-secret local facts.
 
@@ -43,6 +49,25 @@ The journal contains only profile IDs, hashes, and timestamps. If the process
 stops after replacement but before state persistence, recovery compares the live
 file with both hashes and completes the state transition.
 
+## Isolated usage query
+
+```text
+acquire shared operation lock
+  -> decrypt and validate selected profile(s)
+  -> create one temporary CODEX_HOME per profile
+  -> write only that profile plus file-store config
+  -> initialize the official Codex App Server
+  -> read account/rateLimits/read and account/usage/read
+  -> stop the server and delete the temporary home
+  -> reconcile any newer credential generation
+  -> atomically save credential-free usage snapshots
+```
+
+The live account selection never changes. If Codex rotates a refresh token while
+answering the query, identity and generation checks run before the new document
+is saved. For an active profile, compare-before-replace protects the live
+projection from a concurrent Codex write.
+
 ## Data locations
 
 `CODEX_HOME` resolution:
@@ -59,3 +84,6 @@ file with both hashes and completes the state transition.
 
 Only tests and advanced portable installations should normally override these
 paths.
+
+The usage cache is `usage-cache.v1.json` inside the resolved `codex-switch` data
+directory. It contains no authentication documents.

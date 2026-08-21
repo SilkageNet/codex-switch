@@ -32,6 +32,13 @@ focuses on:
 
 - Commands never expose a token retrieval operation.
 - JSON output is intentionally based on dedicated public view types.
+- Usage queries create per-profile temporary homes with mode `0700` and
+  credential files with mode `0600`, then remove them after the App Server exits.
+- The usage cache contains rate limits, aggregate token statistics, timestamps,
+  and public account metadata only. It never contains authentication documents.
+- A token refreshed during an isolated query is accepted only after account,
+  workspace, and refresh-generation checks. Active-file updates use a
+  compare-before-replace check under the shared operation lock.
 - Real credentials are forbidden in tests and fixtures.
 - The Linux desktop implementation fails closed when Secret Service is absent.
 - Portable backups require a passphrase of at least 12 characters and use
