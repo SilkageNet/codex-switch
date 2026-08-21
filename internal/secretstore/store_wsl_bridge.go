@@ -84,11 +84,39 @@ func (store powershellStore) run(request powershellRequest) ([]byte, error) {
 		}
 		message := fmt.Sprintf("run Windows DPAPI credential bridge for %s: %v", request.Operation, err)
 		if strings.TrimSpace(stderr.String()) != "" {
-			message += " (PowerShell diagnostics redacted)"
+			message += bridgeDiagnostic(stderr.String())
 		}
 		return nil, errors.New(message)
 	}
 	return stdout.Bytes(), nil
+}
+
+func bridgeDiagnostic(stderr string) string {
+	const prefix = "CODEX_SWITCH_BRIDGE_ERROR:"
+	start := strings.Index(stderr, prefix)
+	if start < 0 {
+		return " (PowerShell diagnostics redacted)"
+	}
+	fields := strings.SplitN(stderr[start+len(prefix):], ":", 3)
+	if len(fields) < 2 || !safeDiagnosticToken(fields[0]) || !safeDiagnosticToken(fields[1]) {
+		return " (PowerShell diagnostics redacted)"
+	}
+	return fmt.Sprintf(" at %s (%s)", fields[0], fields[1])
+}
+
+func safeDiagnosticToken(value string) bool {
+	if value == "" || len(value) > 64 {
+		return false
+	}
+	for _, character := range value {
+		if (character < 'a' || character > 'z') &&
+			(character < 'A' || character > 'Z') &&
+			(character < '0' || character > '9') &&
+			character != '-' && character != '_' && character != '.' {
+			return false
+		}
+	}
+	return true
 }
 
 func encodePowerShell(script string) string {
@@ -102,8 +130,10 @@ func encodePowerShell(script string) string {
 }
 
 const wslPowerShellScript = `$ErrorActionPreference = 'Stop'
+$stage = 'read-request'
 try {
     $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
+    $stage = 'hash-target'
     $targetBytes = [Text.Encoding]::UTF8.GetBytes([string]$request.target)
     $sha = [Security.Cryptography.SHA256]::Create()
     try {
@@ -113,15 +143,20 @@ try {
     }
     $root = 'Software\SilkageNet\codex-switch\secrets'
     $entropy = [Text.Encoding]::UTF8.GetBytes('codex-switch:wsl-dpapi:v1')
+    $stage = 'resolve-dpapi'
     $scope = [Security.Cryptography.DataProtectionScope]::CurrentUser
 
     switch ([string]$request.operation) {
         'set' {
+            $stage = 'decode-value'
             $plain = [Convert]::FromBase64String([string]$request.value)
             try {
+                $stage = 'protect-value'
                 $cipher = [Security.Cryptography.ProtectedData]::Protect($plain, $entropy, $scope)
+                $stage = 'open-registry-write'
                 $registryKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($root)
                 try {
+                    $stage = 'write-registry'
                     $registryKey.SetValue($property, $cipher, [Microsoft.Win32.RegistryValueKind]::Binary)
                 } finally {
                     if ($null -ne $registryKey) { $registryKey.Dispose() }
@@ -131,14 +166,17 @@ try {
             }
         }
         'get' {
+            $stage = 'open-registry-read'
             $registryKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($root, $false)
             if ($null -eq $registryKey) { exit 44 }
             try {
+                $stage = 'read-registry'
                 if ($registryKey.GetValueNames() -notcontains $property) { exit 44 }
                 $cipher = [byte[]]$registryKey.GetValue($property)
             } finally {
                 $registryKey.Dispose()
             }
+            $stage = 'unprotect-value'
             $plain = [Security.Cryptography.ProtectedData]::Unprotect($cipher, $entropy, $scope)
             try {
                 [Console]::Out.Write([Convert]::ToBase64String($plain))
@@ -147,9 +185,11 @@ try {
             }
         }
         'delete' {
+            $stage = 'open-registry-delete'
             $registryKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($root, $true)
             if ($null -eq $registryKey) { exit 44 }
             try {
+                $stage = 'delete-registry'
                 if ($registryKey.GetValueNames() -notcontains $property) { exit 44 }
                 $registryKey.DeleteValue($property, $false)
             } finally {
@@ -159,7 +199,7 @@ try {
         default { throw 'unsupported credential operation' }
     }
 } catch {
-    [Console]::Error.Write('codex-switch WSL credential bridge failed')
+    [Console]::Error.Write(('CODEX_SWITCH_BRIDGE_ERROR:{0}:{1}' -f $stage, $_.Exception.GetType().Name))
     exit 1
 }
 `

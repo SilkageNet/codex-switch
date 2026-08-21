@@ -95,6 +95,21 @@ func TestPowerShellStoreRedactsDiagnostics(t *testing.T) {
 	}
 }
 
+func TestPowerShellStoreAllowsOnlySanitizedDiagnostics(t *testing.T) {
+	store, _, _ := testPowerShellStore(t)
+	t.Setenv("CODEX_SWITCH_BRIDGE_MODE", "safe-fail")
+	_, err := store.Get("master-key/test")
+	if err == nil || !strings.Contains(err.Error(), "at protect-value (TypeLoadException)") {
+		t.Fatalf("unexpected bridge error: %v", err)
+	}
+
+	t.Setenv("CODEX_SWITCH_BRIDGE_MODE", "unsafe-fail")
+	_, err = store.Get("master-key/test")
+	if err == nil || strings.Contains(err.Error(), "secret") || !strings.Contains(err.Error(), "redacted") {
+		t.Fatalf("unexpected unsafe bridge error: %v", err)
+	}
+}
+
 func TestWSLStoreFallsBackToSecretService(t *testing.T) {
 	fallback := NewMemoryStore()
 	if err := fallback.Set("master-key/test", "legacy-value"); err != nil {
@@ -144,6 +159,8 @@ case "$CODEX_SWITCH_BRIDGE_MODE" in
   get) printf 'c3RvcmVkLXZhdWx0LWtleQ==' ;;
   missing) exit 44 ;;
   fail) printf 'sensitive diagnostic' >&2; exit 1 ;;
+  safe-fail) printf 'CODEX_SWITCH_BRIDGE_ERROR:protect-value:TypeLoadException' >&2; exit 1 ;;
+  unsafe-fail) printf 'CODEX_SWITCH_BRIDGE_ERROR:protect-value:secret value' >&2; exit 1 ;;
 esac
 `
 	if err := os.WriteFile(powershell, []byte(stub), 0o700); err != nil {
