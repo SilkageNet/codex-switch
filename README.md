@@ -55,12 +55,39 @@ codex-switch account add work --device-auth
 
 # Inspect and switch. Close Codex before switching, then restart it.
 codex-switch account list
+codex-switch account usage work
 codex-switch use work
 codex-switch current
 ```
 
 Use `codex-switch doctor` before reporting a problem. Machine-readable output is
-available on status and list commands with `--json`.
+available on commands with `--json`.
+
+## Usage without switching
+
+`codex-switch` can inspect every saved account through the official Codex App
+Server without making that account active:
+
+```bash
+# Query the active managed account now.
+codex-switch account usage
+
+# Query one saved account, or all accounts concurrently.
+codex-switch account usage work
+codex-switch account usage --all
+
+# Refresh all rows in the compact account table.
+codex-switch account list --refresh
+
+# Work offline with the last successful snapshots.
+codex-switch account list --cached
+codex-switch account usage work --cached
+```
+
+Normal `account list` calls refresh only missing snapshots or snapshots older
+than 60 seconds. Each query runs in an isolated temporary `CODEX_HOME`; it does
+not switch `$CODEX_HOME/auth.json`, sessions, plugins, or UI state. The cache
+contains usage numbers and public account metadata only, never tokens.
 
 ## Commands
 
@@ -75,7 +102,8 @@ codex-switch select
 
 codex-switch account add <alias>
 codex-switch account import-current <alias>
-codex-switch account list
+codex-switch account list [--refresh|--cached]
+codex-switch account usage [alias] [--all] [--cached]
 codex-switch account show <alias>
 codex-switch account rename <old> <new>
 codex-switch account reauth <alias>
@@ -93,6 +121,11 @@ Normal account switches modify only:
 
 - `$CODEX_HOME/auth.json`
 - `codex-switch`'s own state and encrypted vault
+
+An account-usage query may persist an officially refreshed credential generation
+back to the encrypted vault. If the queried profile is active, the same
+generation is safely reconciled into `$CODEX_HOME/auth.json`; no account selection
+or Codex-owned state changes.
 
 Initialization may make a one-time, backed-up change to
 `$CODEX_HOME/config.toml` to set `cli_auth_credentials_store = "file"`.

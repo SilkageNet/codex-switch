@@ -47,6 +47,31 @@ codex-switch account reauth <alias>
 
 The ambiguity is intentionally not resolved by guessing.
 
+## Account usage is unavailable
+
+Confirm the official Codex executable is installed and current:
+
+```bash
+codex --version
+codex-switch account usage <alias>
+```
+
+Usage queries require network access and a saved ChatGPT login. They do not work
+for API-key-only or Amazon Bedrock authentication. A missing method on an older
+Codex build is reported as partial when the other method still works; update
+Codex if both usage methods are unavailable.
+
+For an offline or temporarily failing service, inspect the last successful
+snapshot without making a request:
+
+```bash
+codex-switch account list --cached
+codex-switch account usage <alias> --cached
+```
+
+A stale cached snapshot is labeled `stale`; a failed refresh keeps that snapshot
+and displays a warning rather than discarding useful data.
+
 ## Interrupted switch journal
 
 Run `codex-switch status`. Recovery compares the current `auth.json` hash with
