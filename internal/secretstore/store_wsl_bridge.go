@@ -97,11 +97,36 @@ func bridgeDiagnostic(stderr string) string {
 	if start < 0 {
 		return " (PowerShell diagnostics redacted)"
 	}
-	fields := strings.SplitN(stderr[start+len(prefix):], ":", 3)
-	if len(fields) < 2 || !safeDiagnosticToken(fields[0]) || !safeDiagnosticToken(fields[1]) {
+	remainder := stderr[start+len(prefix):]
+	stage, remainder, found := strings.Cut(remainder, ":")
+	if !found || !safeDiagnosticStage(stage) {
 		return " (PowerShell diagnostics redacted)"
 	}
-	return fmt.Sprintf(" at %s (%s)", fields[0], fields[1])
+	exceptionType := leadingDiagnosticToken(remainder)
+	if !safeDiagnosticToken(exceptionType) || !strings.HasSuffix(exceptionType, "Exception") {
+		return " (PowerShell diagnostics redacted)"
+	}
+	return fmt.Sprintf(" at %s (%s)", stage, exceptionType)
+}
+
+func safeDiagnosticStage(stage string) bool {
+	switch stage {
+	case "read-request", "hash-target", "resolve-dpapi", "decode-value", "protect-value",
+		"open-registry-write", "write-registry", "open-registry-read", "read-registry",
+		"unprotect-value", "open-registry-delete", "delete-registry":
+		return true
+	default:
+		return false
+	}
+}
+
+func leadingDiagnosticToken(value string) string {
+	for index, character := range value {
+		if !safeDiagnosticCharacter(character) {
+			return value[:index]
+		}
+	}
+	return value
 }
 
 func safeDiagnosticToken(value string) bool {
@@ -109,14 +134,18 @@ func safeDiagnosticToken(value string) bool {
 		return false
 	}
 	for _, character := range value {
-		if (character < 'a' || character > 'z') &&
-			(character < 'A' || character > 'Z') &&
-			(character < '0' || character > '9') &&
-			character != '-' && character != '_' && character != '.' {
+		if !safeDiagnosticCharacter(character) {
 			return false
 		}
 	}
 	return true
+}
+
+func safeDiagnosticCharacter(character rune) bool {
+	return (character >= 'a' && character <= 'z') ||
+		(character >= 'A' && character <= 'Z') ||
+		(character >= '0' && character <= '9') ||
+		character == '-' || character == '_' || character == '.'
 }
 
 func encodePowerShell(script string) string {

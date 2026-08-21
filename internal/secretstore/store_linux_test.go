@@ -159,7 +159,7 @@ case "$CODEX_SWITCH_BRIDGE_MODE" in
   get) printf 'c3RvcmVkLXZhdWx0LWtleQ==' ;;
   missing) exit 44 ;;
   fail) printf 'sensitive diagnostic' >&2; exit 1 ;;
-  safe-fail) printf 'CODEX_SWITCH_BRIDGE_ERROR:protect-value:TypeLoadException' >&2; exit 1 ;;
+  safe-fail) printf 'CODEX_SWITCH_BRIDGE_ERROR:protect-value:TypeLoadException\nCLIXML wrapper' >&2; exit 1 ;;
   unsafe-fail) printf 'CODEX_SWITCH_BRIDGE_ERROR:protect-value:secret value' >&2; exit 1 ;;
 esac
 `
