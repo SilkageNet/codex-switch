@@ -111,7 +111,7 @@ func bridgeDiagnostic(stderr string) string {
 
 func safeDiagnosticStage(stage string) bool {
 	switch stage {
-	case "read-request", "hash-target", "resolve-dpapi", "decode-value", "protect-value",
+	case "read-request", "hash-target", "load-dpapi", "resolve-dpapi", "decode-value", "protect-value",
 		"open-registry-write", "write-registry", "open-registry-read", "read-registry",
 		"unprotect-value", "open-registry-delete", "delete-registry":
 		return true
@@ -172,6 +172,12 @@ try {
     }
     $root = 'Software\SilkageNet\codex-switch\secrets'
     $entropy = [Text.Encoding]::UTF8.GetBytes('codex-switch:wsl-dpapi:v1')
+    $stage = 'load-dpapi'
+    try {
+        Add-Type -AssemblyName System.Security -ErrorAction Stop
+    } catch {
+        Add-Type -AssemblyName System.Security.Cryptography.ProtectedData -ErrorAction Stop
+    }
     $stage = 'resolve-dpapi'
     $scope = [Security.Cryptography.DataProtectionScope]::CurrentUser
 
