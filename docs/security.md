@@ -11,6 +11,12 @@ Saved profiles are encrypted with XChaCha20-Poly1305. A separate random key is
 stored in macOS Keychain, Windows Credential Manager, or Linux Secret Service.
 The key is never stored next to the ciphertext.
 
+On WSL2, where a Linux desktop Secret Service is commonly unavailable, the key
+is protected by Windows DPAPI for the current Windows user. The resulting
+ciphertext is stored in HKCU, separate from the encrypted vault in the WSL
+filesystem. The embedded PowerShell bridge is static; secret values travel over
+standard input, never process arguments, and bridge diagnostics are redacted.
+
 The active profile must be readable by Codex and is therefore projected into
 the officially supported plaintext file store. That file is created with mode
 `0600` on Unix. On Windows it lives in the current user's profile and is
@@ -41,6 +47,8 @@ focuses on:
   compare-before-replace check under the shared operation lock.
 - Real credentials are forbidden in tests and fixtures.
 - The Linux desktop implementation fails closed when Secret Service is absent.
+  WSL fails closed when neither the Windows DPAPI bridge nor Secret Service is
+  available; it never creates a plaintext key fallback.
 - Portable backups require a passphrase of at least 12 characters and use
   Argon2id before XChaCha20-Poly1305 encryption.
 - Authentication documents larger than the configured limit are rejected.
@@ -54,4 +62,5 @@ than reading standard input, the adapter supplies the vault key directly to
 `-w`. The value can therefore be visible briefly to processes running as the
 same operating-system user, which is inside this project's trust boundary.
 Linux sends values to `secret-tool` over standard input. Windows calls the
-native Credential Manager API directly.
+native Credential Manager API directly. WSL invokes Windows PowerShell without
+a profile and uses current-user DPAPI plus a hashed registry value name.
