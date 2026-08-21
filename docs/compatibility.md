@@ -25,6 +25,25 @@ codex-switch init --enable-file-store
 The command creates a timestamped backup before making a surgical top-level
 `config.toml` edit. Normal account switches do not edit `config.toml`.
 
+## WSL2
+
+The Linux build detects WSL through the standard WSL environment and Microsoft
+kernel markers. On WSL it prefers Windows PowerShell and current-user DPAPI over
+Linux Secret Service:
+
+- the generated vault key is encrypted for the current Windows user;
+- only the DPAPI ciphertext is stored under
+  `HKCU\Software\SilkageNet\codex-switch\secrets`;
+- the key is sent to the static PowerShell bridge over standard input and is not
+  placed in command-line arguments;
+- no plaintext fallback file is created in the WSL filesystem.
+
+Windows interoperability and the default `/mnt/c` mount must be enabled. Both
+Windows PowerShell 5.1 (`powershell.exe`) and PowerShell 7 (`pwsh.exe`) are
+recognized. If `secret-tool` is also available, it remains a compatibility
+fallback so vaults created by earlier Linux builds can still be read and
+rotated.
+
 ## Codex releases
 
 Development began against Codex CLI `0.148.0-alpha.15`; isolated account-usage

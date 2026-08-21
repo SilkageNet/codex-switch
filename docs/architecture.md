@@ -16,7 +16,8 @@
 - `codexlogin` runs official login in a temporary `CODEX_HOME` configured for
   file storage, then imports the resulting document.
 - `secretstore` protects a small random vault key with the operating-system
-  credential store.
+  credential store. WSL uses a Windows PowerShell bridge to protect the key with
+  current-user DPAPI and store only ciphertext in HKCU.
 - `vault` encrypts all saved account profiles with XChaCha20-Poly1305.
 - `switcher` reconciles a live Codex refresh generation, prepares a journal,
   performs compare-before-replace, and records the selected profile.

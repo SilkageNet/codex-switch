@@ -19,6 +19,31 @@ codex-switch init --enable-file-store
 
 A timestamped `config.toml.codex-switch.bak.*` file is created first.
 
+## WSL reports that secret-tool is unavailable
+
+Update to a WSL-capable release and rerun initialization:
+
+```bash
+codex-switch update
+codex-switch init --enable-file-store
+```
+
+WSL2 does not need `secret-tool`. `codex-switch` uses Windows DPAPI through the
+Windows PowerShell executable and stores only encrypted bytes in the current
+Windows user's registry.
+
+If the updated command reports that PowerShell is unavailable, verify WSL
+interoperability:
+
+```bash
+powershell.exe -NoLogo -NoProfile -Command '$PSVersionTable.PSVersion'
+```
+
+If that executable cannot run, enable Windows interoperability and the `/mnt/c`
+mount in WSL, restart the distribution with `wsl.exe --shutdown` from Windows,
+and retry. Installing `libsecret-tools` alone is not sufficient unless the WSL
+distribution also runs a working Secret Service and DBus session.
+
 ## Codex is still running
 
 Quit the desktop app and stop active `codex` CLI processes. The tool refuses the

@@ -20,7 +20,7 @@ atomically projects the selected profile into the existing Codex home.
 ## Security model
 
 - A random 256-bit vault key is stored in macOS Keychain, Windows Credential
-  Manager, or Linux Secret Service.
+  Manager, Linux Secret Service, or Windows DPAPI when running inside WSL2.
 - Account bundles are encrypted at rest with XChaCha20-Poly1305.
 - Only the active account is present in the Codex plaintext file store.
 - Tokens are never printed by commands, JSON output, or diagnostics.
@@ -40,6 +40,10 @@ go install github.com/SilkageNet/codex-switch/cmd/codex-switch@latest
 ```
 
 Release archives for macOS, Linux, and Windows are published on GitHub.
+
+WSL2 is supported by the Linux archive. It uses the Windows user's DPAPI
+protection through the built-in `powershell.exe`; a Linux desktop Secret Service
+session is not required.
 
 ## Quick start
 
