@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -55,6 +56,14 @@ func TestProtocolErrorRedactsChildDiagnostics(t *testing.T) {
 	err := protocolError("query", context.DeadlineExceeded, "secret child output")
 	if strings.Contains(err.Error(), "secret child output") || !strings.Contains(err.Error(), "redacted") {
 		t.Fatalf("unexpected protocol error: %v", err)
+	}
+}
+
+func TestRunnerReturnsBinaryDiscoveryError(t *testing.T) {
+	discoveryErr := errors.New("standalone Codex CLI required")
+	_, _, err := (Runner{BinaryError: discoveryErr}).Query(context.Background(), testAuth("account-a", "refresh-old", "2026-08-20T00:00:00Z"))
+	if !errors.Is(err, discoveryErr) {
+		t.Fatalf("Query() error = %v, want %v", err, discoveryErr)
 	}
 }
 

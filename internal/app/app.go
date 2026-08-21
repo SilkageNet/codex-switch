@@ -48,6 +48,7 @@ type runtimeState struct {
 	paths   appconfig.Paths
 	manager *vault.Manager
 	bin     string
+	binErr  error
 }
 
 type accountView struct {
@@ -203,6 +204,9 @@ func newAccountAddCommand(options *Options, reauth bool) *cobra.Command {
 			runtime, err := options.loadRuntime(true)
 			if err != nil {
 				return err
+			}
+			if runtime.binErr != nil {
+				return runtime.binErr
 			}
 			if runtime.bin == "" {
 				return errors.New("official Codex executable not found; install Codex or pass --codex-binary")
@@ -595,7 +599,7 @@ func newDoctorCommand(options *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			report := doctor.Run(runtime.home, runtime.paths, runtime.manager, runtime.bin)
+			report := doctor.Run(runtime.home, runtime.paths, runtime.manager, runtime.bin, runtime.binErr)
 			if options.JSON {
 				return options.render(report, "")
 			}
@@ -831,8 +835,8 @@ func (options *Options) loadRuntime(create bool) (runtimeState, error) {
 			return runtimeState{}, err
 		}
 	}
-	bin, _ := codexlogin.FindBinary(options.CodexBin)
-	return runtimeState{home: home, paths: paths, manager: manager, bin: bin}, nil
+	bin, binErr := codexlogin.FindBinary(options.CodexBin)
+	return runtimeState{home: home, paths: paths, manager: manager, bin: bin, binErr: binErr}, nil
 }
 
 func (options *Options) loadRuntimeForDoctor() (runtimeState, error) {
@@ -848,8 +852,8 @@ func (options *Options) loadRuntimeForDoctor() (runtimeState, error) {
 	if storeErr != nil {
 		return runtimeState{}, storeErr
 	}
-	bin, _ := codexlogin.FindBinary(options.CodexBin)
-	return runtimeState{home: home, paths: paths, manager: vault.New(paths.Vault, store), bin: bin}, nil
+	bin, binErr := codexlogin.FindBinary(options.CodexBin)
+	return runtimeState{home: home, paths: paths, manager: vault.New(paths.Vault, store), bin: bin, binErr: binErr}, nil
 }
 
 func (runtime runtimeState) switcher() switcher.Service {
@@ -863,6 +867,7 @@ func (runtime runtimeState) usageService(version string) accountusage.Service {
 		Vault: runtime.manager,
 		Runner: codexusage.Runner{
 			Binary:        runtime.bin,
+			BinaryError:   runtime.binErr,
 			ClientVersion: version,
 		},
 	}

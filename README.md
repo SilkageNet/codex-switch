@@ -41,6 +41,13 @@ go install github.com/SilkageNet/codex-switch/cmd/codex-switch@latest
 
 Release archives for macOS, Linux, and Windows are published on GitHub.
 
+Adding accounts and querying live usage require an official Codex CLI that this
+process can launch. On Windows, install the
+[standalone Codex CLI](https://learn.chatgpt.com/docs/codex/cli); the executable
+bundled inside the Codex desktop app's WindowsApps package cannot be launched by
+external processes. Verify the installation with `codex --version` before using
+those commands.
+
 WSL2 is supported by the Linux archive. It uses the Windows user's DPAPI
 protection through the built-in `powershell.exe`; a Linux desktop Secret Service
 session is not required.

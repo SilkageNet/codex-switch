@@ -51,6 +51,13 @@ queries were validated with `0.148.0-alpha.21`. The project does not use private
 OAuth or usage endpoints. Login is delegated to the installed official CLI, and
 usage is read through the documented stable Codex App Server protocol.
 
+On Windows, these operations require the standalone Codex CLI. The executable
+inside the Microsoft Store/MSIX desktop package is private to that package and
+cannot be spawned by an external process. `codex-switch` skips that entry while
+searching `PATH` and returns an actionable error when no standalone CLI is
+available. A standalone CLI can also be selected with `CODEX_BINARY` or
+`--codex-binary`.
+
 Usage querying initializes `codex app-server` and calls:
 
 - `account/read`
@@ -71,5 +78,6 @@ accepted shape.
 - OpenAI authentication documentation: https://developers.openai.com/codex/auth
 - OpenAI Codex App Server documentation:
   https://learn.chatgpt.com/docs/app-server
+- OpenAI Codex CLI documentation: https://learn.chatgpt.com/docs/codex/cli
 - CC Switch managed Codex OAuth implementation:
   https://github.com/farion1231/cc-switch/tree/v3.20.0

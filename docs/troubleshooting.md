@@ -81,6 +81,16 @@ codex --version
 codex-switch account usage <alias>
 ```
 
+On Windows, a path under
+`C:\Program Files\WindowsApps\OpenAI.Codex_*\app\resources\codex.exe` belongs to
+the desktop app package. Windows does not allow `codex-switch` to launch that
+bundled executable directly. Install the
+[standalone Codex CLI](https://learn.chatgpt.com/docs/codex/cli), open a new
+terminal, and verify that `codex --version` resolves to the standalone CLI. If
+needed, select it explicitly with `--codex-binary <path>` or the `CODEX_BINARY`
+environment variable. `codex-switch doctor` reports this case separately from a
+completely missing CLI.
+
 Usage queries require network access and a saved ChatGPT login. They do not work
 for API-key-only or Amazon Bedrock authentication. A missing method on an older
 Codex build is reported as partial when the other method still works; update

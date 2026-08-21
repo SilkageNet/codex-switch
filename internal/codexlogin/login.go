@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/SilkageNet/codex-switch/internal/atomicfile"
@@ -21,18 +22,53 @@ type Runner struct {
 
 func FindBinary(override string) (string, error) {
 	if override != "" {
-		return override, nil
+		return validateBinary(override)
 	}
 	if configured := os.Getenv("CODEX_BINARY"); configured != "" {
-		return configured, nil
+		return validateBinary(configured)
 	}
 	if path, err := exec.LookPath("codex"); err == nil {
-		return path, nil
+		if isWindowsDesktopBundle(path) {
+			if standalone := findStandaloneBinaryOnPath(); standalone != "" {
+				return standalone, nil
+			}
+		}
+		return validateBinary(path)
 	}
 	if path := "/Applications/ChatGPT.app/Contents/Resources/codex"; fileExists(path) {
 		return path, nil
 	}
 	return "", fmt.Errorf("codex executable not found; install Codex CLI or set CODEX_BINARY")
+}
+
+func validateBinary(path string) (string, error) {
+	if isWindowsDesktopBundle(path) {
+		return "", fmt.Errorf("the Codex desktop bundled executable at %s cannot be launched externally on Windows; install the standalone Codex CLI or pass --codex-binary", path)
+	}
+	return path, nil
+}
+
+func findStandaloneBinaryOnPath() string {
+	for _, directory := range filepath.SplitList(os.Getenv("PATH")) {
+		directory = strings.Trim(strings.TrimSpace(directory), `"`)
+		if directory == "" {
+			continue
+		}
+		path, err := exec.LookPath(filepath.Join(directory, "codex"))
+		if err == nil && !isWindowsDesktopBundle(path) {
+			return path
+		}
+	}
+	return ""
+}
+
+func isWindowsDesktopBundle(path string) bool {
+	if runtime.GOOS != "windows" {
+		return false
+	}
+	normalized := strings.ToLower(strings.ReplaceAll(filepath.Clean(path), "/", `\`))
+	return strings.Contains(normalized, `\windowsapps\openai.codex_`) &&
+		strings.HasSuffix(normalized, `\app\resources\codex.exe`)
 }
 
 func (runner Runner) Login(deviceAuth bool) (authschema.Document, error) {
