@@ -111,7 +111,7 @@ try {
     } finally {
         $sha.Dispose()
     }
-    $root = 'HKCU:\Software\SilkageNet\codex-switch\secrets'
+    $root = 'Software\SilkageNet\codex-switch\secrets'
     $entropy = [Text.Encoding]::UTF8.GetBytes('codex-switch:wsl-dpapi:v1')
     $scope = [Security.Cryptography.DataProtectionScope]::CurrentUser
 
@@ -120,19 +120,25 @@ try {
             $plain = [Convert]::FromBase64String([string]$request.value)
             try {
                 $cipher = [Security.Cryptography.ProtectedData]::Protect($plain, $entropy, $scope)
-                if (-not (Test-Path -LiteralPath $root)) {
-                    New-Item -Path $root -Force | Out-Null
+                $registryKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($root)
+                try {
+                    $registryKey.SetValue($property, $cipher, [Microsoft.Win32.RegistryValueKind]::Binary)
+                } finally {
+                    if ($null -ne $registryKey) { $registryKey.Dispose() }
                 }
-                New-ItemProperty -LiteralPath $root -Name $property -PropertyType Binary -Value $cipher -Force | Out-Null
             } finally {
                 if ($null -ne $plain) { [Array]::Clear($plain, 0, $plain.Length) }
             }
         }
         'get' {
-            if (-not (Test-Path -LiteralPath $root)) { exit 44 }
-            $item = Get-Item -LiteralPath $root
-            if ($item.GetValueNames() -notcontains $property) { exit 44 }
-            $cipher = [byte[]]$item.GetValue($property)
+            $registryKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($root, $false)
+            if ($null -eq $registryKey) { exit 44 }
+            try {
+                if ($registryKey.GetValueNames() -notcontains $property) { exit 44 }
+                $cipher = [byte[]]$registryKey.GetValue($property)
+            } finally {
+                $registryKey.Dispose()
+            }
             $plain = [Security.Cryptography.ProtectedData]::Unprotect($cipher, $entropy, $scope)
             try {
                 [Console]::Out.Write([Convert]::ToBase64String($plain))
@@ -141,10 +147,14 @@ try {
             }
         }
         'delete' {
-            if (-not (Test-Path -LiteralPath $root)) { exit 44 }
-            $item = Get-Item -LiteralPath $root
-            if ($item.GetValueNames() -notcontains $property) { exit 44 }
-            Remove-ItemProperty -LiteralPath $root -Name $property
+            $registryKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($root, $true)
+            if ($null -eq $registryKey) { exit 44 }
+            try {
+                if ($registryKey.GetValueNames() -notcontains $property) { exit 44 }
+                $registryKey.DeleteValue($property, $false)
+            } finally {
+                $registryKey.Dispose()
+            }
         }
         default { throw 'unsupported credential operation' }
     }
