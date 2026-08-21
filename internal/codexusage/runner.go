@@ -23,6 +23,7 @@ const maxProtocolMessage = 8 << 20
 
 type Runner struct {
 	Binary        string
+	BinaryError   error
 	ClientVersion string
 	command       func(context.Context, string, ...string) *exec.Cmd
 }
@@ -45,6 +46,9 @@ type rpcError struct {
 }
 
 func (runner Runner) Query(ctx context.Context, auth json.RawMessage) (Snapshot, json.RawMessage, error) {
+	if runner.BinaryError != nil {
+		return Snapshot{}, nil, runner.BinaryError
+	}
 	if runner.Binary == "" {
 		return Snapshot{}, nil, errors.New("official Codex executable not found; install Codex or pass --codex-binary")
 	}

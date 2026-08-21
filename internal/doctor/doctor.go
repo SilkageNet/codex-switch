@@ -25,7 +25,7 @@ type Report struct {
 	Checks []Check `json:"checks"`
 }
 
-func Run(home codexhome.Home, paths appconfig.Paths, manager *vault.Manager, codexBinary string) Report {
+func Run(home codexhome.Home, paths appconfig.Paths, manager *vault.Manager, codexBinary string, codexBinaryErr error) Report {
 	report := Report{OK: true}
 	add := func(name, status, message string) {
 		report.Checks = append(report.Checks, Check{Name: name, Status: status, Message: message})
@@ -72,7 +72,9 @@ func Run(home codexhome.Home, paths appconfig.Paths, manager *vault.Manager, cod
 		add("vault", "ok", fmt.Sprintf("%d account profile(s)", len(data.Profiles)))
 	}
 
-	if codexBinary == "" {
+	if codexBinaryErr != nil {
+		add("codex_cli", "error", codexBinaryErr.Error())
+	} else if codexBinary == "" {
 		add("codex_cli", "error", "codex executable not found")
 	} else {
 		runner := codexlogin.Runner{Binary: codexBinary}
