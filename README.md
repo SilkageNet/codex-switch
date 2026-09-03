@@ -104,6 +104,13 @@ than 60 seconds. Each query runs in an isolated temporary `CODEX_HOME`; it does
 not switch `$CODEX_HOME/auth.json`, sessions, plugins, or UI state. The cache
 contains usage numbers and public account metadata only, never tokens.
 
+The compact list shows the next automatic reset for each quota window. Its
+`RESETS` column is separate: it reports earned manual rate-limit resets and the
+nearest known expiration, when Codex provides them. `account usage <alias>`
+shows exact local reset times plus each returned earned-reset grant and expiry.
+The authoritative earned-reset count can be present even when the service omits
+or caps its detail rows.
+
 ## Commands
 
 ```text

@@ -40,8 +40,9 @@ focuses on:
 - JSON output is intentionally based on dedicated public view types.
 - Usage queries create per-profile temporary homes with mode `0700` and
   credential files with mode `0600`, then remove them after the App Server exits.
-- The usage cache contains rate limits, aggregate token statistics, timestamps,
-  and public account metadata only. It never contains authentication documents.
+- The usage cache contains rate limits, earned-reset counts and metadata,
+  aggregate token statistics, timestamps, and public account metadata only. It
+  never contains authentication documents.
 - A token refreshed during an isolated query is accepted only after account,
   workspace, and refresh-generation checks. Active-file updates use a
   compare-before-replace check under the shared operation lock.

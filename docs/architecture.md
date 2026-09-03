@@ -83,6 +83,7 @@ acquire shared operation lock
   -> write only that profile plus file-store config
   -> initialize the official Codex App Server
   -> read account/rateLimits/read and account/usage/read
+  -> retain quota reset times and any earned-reset count and expiration metadata
   -> stop the server and delete the temporary home
   -> reconcile any newer credential generation
   -> atomically save credential-free usage snapshots

@@ -300,7 +300,7 @@ func newAccountListCommand(options *Options) *cobra.Command {
 				return nil
 			}
 			writer := tabwriter.NewWriter(options.Output, 0, 4, 2, ' ', 0)
-			_, _ = fmt.Fprintln(writer, "\tALIAS\tIDENTITY\tPLAN\tLIMITS\tTOKENS\tUPDATED")
+			_, _ = fmt.Fprintln(writer, "\tALIAS\tIDENTITY\tPLAN\tLIMITS\tRESETS\tTOKENS\tUPDATED")
 			for _, view := range views {
 				marker := " "
 				if view.Active {
@@ -310,8 +310,8 @@ func newAccountListCommand(options *Options) *cobra.Command {
 				if identity == "" {
 					identity = view.AccountID
 				}
-				plan, limits, tokens, updated := summarizeUsage(view.Usage, time.Now())
-				_, _ = fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", marker, view.Alias, identity, plan, limits, tokens, updated)
+				plan, limits, resets, tokens, updated := summarizeUsage(view.Usage, time.Now())
+				_, _ = fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", marker, view.Alias, identity, plan, limits, resets, tokens, updated)
 			}
 			if err := writer.Flush(); err != nil {
 				return err
@@ -1119,9 +1119,9 @@ func usageStatus(fetchedAt, now time.Time) string {
 	return "fresh"
 }
 
-func summarizeUsage(usage *usageView, now time.Time) (string, string, string, string) {
+func summarizeUsage(usage *usageView, now time.Time) (string, string, string, string, string) {
 	if usage == nil || usage.Status == "unavailable" {
-		return "-", "unavailable", "-", "-"
+		return "-", "unavailable", "-", "-", "-"
 	}
 	plan := usage.PlanType
 	if plan == "" {
@@ -1131,15 +1131,16 @@ func summarizeUsage(usage *usageView, now time.Time) (string, string, string, st
 	if main := mainRateLimit(usage.RateLimits); main != nil {
 		parts := make([]string, 0, 2)
 		if main.Primary != nil {
-			parts = append(parts, compactWindow(main.Primary))
+			parts = append(parts, compactWindow(main.Primary, now))
 		}
 		if main.Secondary != nil {
-			parts = append(parts, compactWindow(main.Secondary))
+			parts = append(parts, compactWindow(main.Secondary, now))
 		}
 		if len(parts) > 0 {
 			limits = strings.Join(parts, " · ")
 		}
 	}
+	resets := compactResetCredits(usage.RateLimits, now)
 	tokens := "-"
 	if usage.TokenUsage != nil && usage.TokenUsage.Summary.LifetimeTokens != nil {
 		tokens = compactNumber(*usage.TokenUsage.Summary.LifetimeTokens)
@@ -1151,7 +1152,7 @@ func summarizeUsage(usage *usageView, now time.Time) (string, string, string, st
 	if usage.Error != "" {
 		updated += " (error)"
 	}
-	return plan, limits, tokens, updated
+	return plan, limits, resets, tokens, updated
 }
 
 func formatUsage(view accountView, now time.Time) string {
@@ -1205,6 +1206,7 @@ func formatUsage(view accountView, now time.Time) string {
 			}
 			fmt.Fprintf(&output, "\n  %s: %s", label, value)
 		}
+		formatResetCredits(&output, usage.RateLimits.RateLimitResetCredits, now)
 	}
 	if usage.TokenUsage != nil {
 		summary := usage.TokenUsage.Summary
@@ -1252,7 +1254,19 @@ func mainRateLimit(limits *codexusage.RateLimits) *codexusage.RateLimitSnapshot 
 	return &copy
 }
 
-func compactWindow(window *codexusage.RateLimitWindow) string {
+func compactWindow(window *codexusage.RateLimitWindow, now time.Time) string {
+	value := compactWindowBase(window)
+	if window.ResetsAt == nil {
+		return value
+	}
+	reset := time.Unix(*window.ResetsAt, 0)
+	if reset.After(now) {
+		return value + " ↻" + compactDuration(reset.Sub(now))
+	}
+	return value + " ↻due"
+}
+
+func compactWindowBase(window *codexusage.RateLimitWindow) string {
 	duration := "limit"
 	if window.WindowDurationMins != nil {
 		duration = compactMinutes(*window.WindowDurationMins)
@@ -1261,16 +1275,85 @@ func compactWindow(window *codexusage.RateLimitWindow) string {
 }
 
 func detailedWindow(window *codexusage.RateLimitWindow, now time.Time) string {
-	value := compactWindow(window) + " used"
+	value := compactWindowBase(window) + " used"
 	if window.ResetsAt != nil {
 		reset := time.Unix(*window.ResetsAt, 0)
 		if reset.After(now) {
-			value += ", resets in " + compactDuration(reset.Sub(now))
+			value += ", resets in " + compactDuration(reset.Sub(now)) + " at " + formatLocalTime(reset)
 		} else {
-			value += ", reset pending"
+			value += ", reset pending since " + formatLocalTime(reset)
 		}
 	}
 	return value
+}
+
+func compactResetCredits(limits *codexusage.RateLimits, now time.Time) string {
+	if limits == nil || limits.RateLimitResetCredits == nil {
+		return "-"
+	}
+	credits := limits.RateLimitResetCredits
+	value := strconv.FormatInt(credits.AvailableCount, 10)
+	if credits.AvailableCount == 0 {
+		return value
+	}
+	var earliest *time.Time
+	for _, credit := range credits.Credits {
+		if credit.ExpiresAt == nil || (credit.Status != "" && !strings.EqualFold(credit.Status, "available")) {
+			continue
+		}
+		expires := time.Unix(*credit.ExpiresAt, 0)
+		if earliest == nil || expires.Before(*earliest) {
+			earliest = &expires
+		}
+	}
+	if earliest == nil {
+		return value
+	}
+	if earliest.After(now) {
+		return value + " exp " + compactDuration(earliest.Sub(now))
+	}
+	return value + " exp due"
+}
+
+func formatResetCredits(output *strings.Builder, summary *codexusage.RateLimitResetCreditsSummary, now time.Time) {
+	if summary == nil {
+		return
+	}
+	fmt.Fprintf(output, "\nEarned resets: %d available", summary.AvailableCount)
+	for _, credit := range summary.Credits {
+		label := credit.ResetType
+		if credit.Title != nil && *credit.Title != "" {
+			label = *credit.Title
+		}
+		if label == "" {
+			label = "Rate-limit reset"
+		}
+		details := make([]string, 0, 3)
+		if credit.Status != "" {
+			details = append(details, credit.Status)
+		}
+		if credit.ExpiresAt != nil {
+			expires := time.Unix(*credit.ExpiresAt, 0)
+			if expires.After(now) {
+				details = append(details, "expires in "+compactDuration(expires.Sub(now))+" at "+formatLocalTime(expires))
+			} else {
+				details = append(details, "expired at "+formatLocalTime(expires))
+			}
+		} else {
+			details = append(details, "expiration not provided")
+		}
+		if credit.GrantedAt > 0 {
+			details = append(details, "granted "+formatLocalTime(time.Unix(credit.GrantedAt, 0)))
+		}
+		fmt.Fprintf(output, "\n  %s: %s", label, strings.Join(details, "; "))
+	}
+	if summary.AvailableCount > int64(len(summary.Credits)) {
+		fmt.Fprintf(output, "\n  Details: Codex returned %d of %d available resets", len(summary.Credits), summary.AvailableCount)
+	}
+}
+
+func formatLocalTime(value time.Time) string {
+	return value.Local().Format("2006-01-02 15:04:05 MST")
 }
 
 func compactMinutes(minutes int64) string {
