@@ -55,19 +55,37 @@ ordinary switching.
 
 ## Active account is unmanaged
 
-Preserve it before switching:
+Inspect it and preserve it before switching:
 
 ```bash
-codex-switch account import-current current
+codex-switch sync --check
+codex-switch sync --as current
 ```
+
+## Account list disagrees with a login performed in Codex
+
+Recent releases derive the active marker from Codex's live `auth.json`. Check
+the detected drift and reconcile the encrypted profile and local pointer:
+
+```bash
+codex-switch sync --check
+codex-switch sync
+```
+
+If the live account is already a saved profile, no alias is required. This does
+not rewrite Codex sessions, plugins, configuration, or UI state. Running
+`codex-switch use <live-alias>` also repairs the state without requiring Codex
+to close or restart.
 
 ## Token generations are ambiguous
 
 Codex changed a refresh token but the saved and live timestamps cannot prove
-which is newer. Reauthenticate the affected profile:
+which is newer. Inspect the conflict first. To intentionally preserve the
+credentials currently used by Codex:
 
 ```bash
-codex-switch account reauth <alias>
+codex-switch sync --check
+codex-switch sync --prefer-live
 ```
 
 The ambiguity is intentionally not resolved by guessing.

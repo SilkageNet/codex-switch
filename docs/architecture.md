@@ -8,6 +8,8 @@
    are never copied between profile directories.
 4. The official `codex login` command owns the login protocol.
 5. Unknown authentication schemas and ambiguous token generations fail closed.
+6. The live `auth.json` identity is authoritative. Persisted active state is a
+   recovery hint and must never override a different live account ID.
 
 ## Components
 
@@ -19,8 +21,9 @@
   credential store. WSL uses a Windows PowerShell bridge to protect the key with
   current-user DPAPI and store only ciphertext in HKCU.
 - `vault` encrypts all saved account profiles with XChaCha20-Poly1305.
-- `switcher` reconciles a live Codex refresh generation, prepares a journal,
-  performs compare-before-replace, and records the selected profile.
+- `switcher` observes the live identity, classifies external-login and token
+  drift, safely synchronizes known profiles, prepares a journal, performs
+  compare-before-replace, and records the selected profile.
 - `codexusage` runs the official Codex App Server in an isolated temporary
   `CODEX_HOME` and reads the stable account, rate-limit, and token-usage methods.
 - `accountusage` queries up to four profiles concurrently, reconciles credential
@@ -35,10 +38,12 @@
 ```text
 acquire lock
   -> recover stale journal
-  -> verify Codex is stopped
   -> read and hash live auth
+  -> identify the live account independently of recorded state
   -> reconcile live refresh generation into vault
   -> decrypt and validate target
+  -> if target is already live, repair state without replacing auth.json
+  -> otherwise verify Codex is stopped
   -> persist prepared journal
   -> compare live hash again
   -> atomically replace auth.json
@@ -49,6 +54,25 @@ acquire lock
 The journal contains only profile IDs, hashes, and timestamps. If the process
 stops after replacement but before state persistence, recovery compares the live
 file with both hashes and completes the state transition.
+
+## Live-state reconciliation
+
+```text
+read live auth and recorded state
+  -> match account_id plus workspace_id against encrypted profiles
+  -> prefer one exact credential-material match
+  -> classify in-sync, external login, refresh, unmanaged, or ambiguous
+  -> for sync: compare the live hash again
+  -> adopt only a provably newer live generation
+  -> persist the derived active pointer
+```
+
+Read-oriented commands use the observation immediately, so a stale recorded
+profile never receives the active marker. Observation itself does not modify
+state or credentials; the existing live usage-refresh path may still persist a
+validated newer token generation. `sync` performs explicit reconciliation
+writes under the shared lock. Unknown and multiple matches are never assigned
+by email or alias, and conflicting token generations require `--prefer-live`.
 
 ## Isolated usage query
 

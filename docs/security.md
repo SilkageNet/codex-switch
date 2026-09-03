@@ -45,6 +45,10 @@ focuses on:
 - A token refreshed during an isolated query is accepted only after account,
   workspace, and refresh-generation checks. Active-file updates use a
   compare-before-replace check under the shared operation lock.
+- Active-account detection uses the live account and workspace identifiers;
+  stale recorded state, aliases, and email addresses cannot redirect live
+  credentials into another saved profile. Synchronization rechecks the live
+  file hash before committing derived state.
 - Real credentials are forbidden in tests and fixtures.
 - The Linux desktop implementation fails closed when Secret Service is absent.
   WSL fails closed when neither the Windows DPAPI bridge nor Secret Service is

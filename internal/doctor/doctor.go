@@ -11,6 +11,7 @@ import (
 	"github.com/SilkageNet/codex-switch/internal/codexlogin"
 	appconfig "github.com/SilkageNet/codex-switch/internal/config"
 	"github.com/SilkageNet/codex-switch/internal/process"
+	"github.com/SilkageNet/codex-switch/internal/switcher"
 	"github.com/SilkageNet/codex-switch/internal/vault"
 )
 
@@ -62,6 +63,7 @@ func Run(home codexhome.Home, paths appconfig.Paths, manager *vault.Manager, cod
 		add("active_auth", "error", err.Error())
 	}
 
+	vaultReady := false
 	if data, err := manager.Load(); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			add("vault", "warning", "vault is not initialized")
@@ -70,6 +72,26 @@ func Run(home codexhome.Home, paths appconfig.Paths, manager *vault.Manager, cod
 		}
 	} else {
 		add("vault", "ok", fmt.Sprintf("%d account profile(s)", len(data.Profiles)))
+		vaultReady = true
+	}
+
+	if vaultReady {
+		observation, err := (switcher.Service{Home: home, Paths: paths, Vault: manager}).Observe()
+		if err != nil {
+			add("account_state", "error", err.Error())
+		} else {
+			switch observation.State {
+			case switcher.AccountStateInSync, switcher.AccountStateNoActive:
+				add("account_state", "ok", string(observation.State))
+			case switcher.AccountStateExternalLogin, switcher.AccountStateExternalLoginWithRefresh,
+				switcher.AccountStateCredentialRefresh, switcher.AccountStateStateDrift, switcher.AccountStateLoggedOut:
+				add("account_state", "warning", string(observation.State)+"; run codex-switch sync")
+			case switcher.AccountStateUnmanaged:
+				add("account_state", "warning", "unmanaged; run codex-switch sync --as <alias>")
+			default:
+				add("account_state", "warning", string(observation.State)+"; run codex-switch sync --check")
+			}
+		}
 	}
 
 	if codexBinaryErr != nil {

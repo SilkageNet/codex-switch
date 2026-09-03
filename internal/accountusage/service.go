@@ -17,6 +17,7 @@ import (
 	appconfig "github.com/SilkageNet/codex-switch/internal/config"
 	"github.com/SilkageNet/codex-switch/internal/filelock"
 	appstate "github.com/SilkageNet/codex-switch/internal/state"
+	"github.com/SilkageNet/codex-switch/internal/switcher"
 	"github.com/SilkageNet/codex-switch/internal/usagecache"
 	"github.com/SilkageNet/codex-switch/internal/vault"
 )
@@ -127,6 +128,14 @@ func (service Service) Refresh(ctx context.Context, profileIDs []string) (map[st
 	if stateErr != nil && !errors.Is(stateErr, os.ErrNotExist) {
 		return nil, stateErr
 	}
+	observation, observationErr := (switcher.Service{Home: service.Home, Paths: service.Paths, Vault: service.Vault}).Observe()
+	if observationErr != nil {
+		return nil, observationErr
+	}
+	activeProfileID := ""
+	if observation.Managed {
+		activeProfileID = observation.ProfileID
+	}
 	vaultChanged := false
 	for profileID, candidateRaw := range candidates {
 		profile, findErr := data.Find(profileID)
@@ -176,7 +185,7 @@ func (service Service) Refresh(ctx context.Context, profileIDs []string) (map[st
 		}
 		vaultChanged = true
 
-		if state.ActiveProfileID == profile.ID {
+		if activeProfileID == profile.ID {
 			changed, syncErr := service.reconcileActive(profile, candidate, &state)
 			if syncErr != nil {
 				entry := results[profileID]
@@ -220,7 +229,8 @@ func (service Service) reconcileActive(profile *vault.Profile, candidate authsch
 	if err != nil {
 		return false, fmt.Errorf("validate active credentials after refresh: %w", err)
 	}
-	if live.Tokens.AccountID != candidate.Tokens.AccountID {
+	if live.Tokens.AccountID != candidate.Tokens.AccountID ||
+		(live.WorkspaceID != "" && candidate.WorkspaceID != "" && live.WorkspaceID != candidate.WorkspaceID) {
 		return false, errors.New("active account changed while usage was being queried; refreshed credentials were kept only in the vault")
 	}
 	decision, err := authschema.CompareGeneration(candidate, live)
@@ -235,6 +245,10 @@ func (service Service) reconcileActive(profile *vault.Profile, candidate authsch
 		if refreshed, ok := live.GenerationTime(); ok {
 			profile.TokenUpdatedAt = refreshed
 		}
+		if err := appstate.Save(service.Paths.State, appstate.State{ActiveProfileID: profile.ID, AuthHash: liveHash}); err != nil {
+			return false, fmt.Errorf("record active credentials: %w", err)
+		}
+		*state = appstate.State{Version: 1, ActiveProfileID: profile.ID, AuthHash: liveHash}
 		return true, nil
 	case authschema.GenerationUseSaved:
 		currentHash, hashErr := service.Home.AuthHash()
@@ -255,6 +269,13 @@ func (service Service) reconcileActive(profile *vault.Profile, candidate authsch
 			return false, fmt.Errorf("record refreshed active credentials: %w", err)
 		}
 		*state = appstate.State{Version: 1, ActiveProfileID: profile.ID, AuthHash: publishedHash}
+	case authschema.GenerationSame:
+		if state.ActiveProfileID != profile.ID || state.AuthHash != liveHash {
+			if err := appstate.Save(service.Paths.State, appstate.State{ActiveProfileID: profile.ID, AuthHash: liveHash}); err != nil {
+				return false, fmt.Errorf("record active credentials: %w", err)
+			}
+			*state = appstate.State{Version: 1, ActiveProfileID: profile.ID, AuthHash: liveHash}
+		}
 	}
 	return false, nil
 }

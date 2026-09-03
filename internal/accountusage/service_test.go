@@ -114,6 +114,53 @@ func TestRefreshRejectsCredentialsForDifferentAccount(t *testing.T) {
 	}
 }
 
+func TestRefreshUsesLiveAccountWhenRecordedStateIsStale(t *testing.T) {
+	service, manager, profile := testService(t, false)
+	data, err := manager.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherDocument, err := authschema.Parse(authBytes("account-b", "refresh-b", "2026-08-20T00:00:00Z"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	updatedAt, _ := otherDocument.GenerationTime()
+	other := vault.NewProfile("b", "test", otherDocument.Raw, "account-b", "", "b@example.com", updatedAt)
+	if err := data.Add(other, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Save(data); err != nil {
+		t.Fatal(err)
+	}
+	savedOther, _ := data.Find("b")
+	if err := service.Home.WriteAuth(profile.Auth); err != nil {
+		t.Fatal(err)
+	}
+	if err := appstate.Save(service.Paths.State, appstate.State{ActiveProfileID: savedOther.ID, AuthHash: "stale"}); err != nil {
+		t.Fatal(err)
+	}
+	service.Runner = fakeRunner{
+		snapshot: codexusage.Snapshot{FetchedAt: time.Now().UTC(), PlanType: "pro"},
+		auth:     authBytes("account-a", "refresh-new", "2026-08-20T01:00:00Z"),
+	}
+	results, err := service.Refresh(context.Background(), []string{profile.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[profile.ID].Error != "" {
+		t.Fatalf("unexpected refresh warning: %s", results[profile.ID].Error)
+	}
+	live, _ := service.Home.ReadAuth()
+	liveDocument, _ := authschema.Parse(live)
+	if liveDocument.Tokens.RefreshToken != "refresh-new" {
+		t.Fatal("actual active profile was not refreshed")
+	}
+	state, _ := appstate.Load(service.Paths.State)
+	if state.ActiveProfileID != profile.ID {
+		t.Fatalf("stale active state was not repaired: %#v", state)
+	}
+}
+
 func testService(t *testing.T, active bool) (Service, *vault.Manager, vault.Profile) {
 	t.Helper()
 	root := t.TempDir()
