@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/SilkageNet/codex-switch/internal/codexusage"
+	"github.com/SilkageNet/codex-switch/internal/switcher"
 )
 
 func TestSummarizeUsage(t *testing.T) {
@@ -28,6 +29,27 @@ func TestSummarizeUsage(t *testing.T) {
 	plan, limits, tokens, updated := summarizeUsage(view, now)
 	if plan != "pro" || limits != "5h 21% · 7d 81%" || tokens != "1.2M" || updated != "just now" {
 		t.Fatalf("unexpected summary: %q %q %q %q", plan, limits, tokens, updated)
+	}
+}
+
+func TestObservationMessagesExplainExternalLogin(t *testing.T) {
+	observation := switcher.Observation{
+		State:         switcher.AccountStateExternalLoginWithRefresh,
+		Alias:         "silkage",
+		Email:         "silkage@example.com",
+		RecordedAlias: "kun",
+	}
+	status := formatObservation(observation)
+	notice := observationNotice(observation)
+	for _, expected := range []string{"silkage", "outside codex-switch", "codex-switch sync"} {
+		if !strings.Contains(status, expected) {
+			t.Fatalf("status %q does not contain %q", status, expected)
+		}
+	}
+	for _, expected := range []string{"silkage", "kun", "codex-switch sync"} {
+		if !strings.Contains(notice, expected) {
+			t.Fatalf("notice %q does not contain %q", notice, expected)
+		}
 	}
 }
 

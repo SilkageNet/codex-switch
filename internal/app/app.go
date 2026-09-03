@@ -94,6 +94,7 @@ func NewCommand(version string) *cobra.Command {
 		newInitCommand(options),
 		newCurrentCommand(options),
 		newStatusCommand(options),
+		newSyncCommand(options),
 		newDoctorCommand(options),
 		newUseCommand(options),
 		newDeactivateCommand(options),
@@ -245,7 +246,11 @@ func newAccountListCommand(options *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			state, _ := appstate.Load(runtime.paths.State)
+			observation, err := runtime.switcher().Observe()
+			if err != nil {
+				return err
+			}
+			activeProfileID := observation.ProfileID
 			cache, err := runtime.usageService(options.Version).Cached()
 			if err != nil {
 				return err
@@ -275,10 +280,15 @@ func newAccountListCommand(options *Options) *cobra.Command {
 				if err != nil {
 					return err
 				}
+				observation, err = runtime.switcher().Observe()
+				if err != nil {
+					return err
+				}
+				activeProfileID = observation.ProfileID
 			}
 			views := make([]accountView, 0, len(data.Profiles))
 			for _, profile := range data.Profiles {
-				view := toView(profile, profile.ID == state.ActiveProfileID)
+				view := toView(profile, profile.ID == activeProfileID)
 				view.Usage = usageFromCache(cache.Profiles, profile.ID, refreshErrors[profile.ID], time.Now())
 				views = append(views, view)
 			}
@@ -303,7 +313,13 @@ func newAccountListCommand(options *Options) *cobra.Command {
 				plan, limits, tokens, updated := summarizeUsage(view.Usage, time.Now())
 				_, _ = fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", marker, view.Alias, identity, plan, limits, tokens, updated)
 			}
-			return writer.Flush()
+			if err := writer.Flush(); err != nil {
+				return err
+			}
+			if notice := observationNotice(observation); notice != "" {
+				_, _ = fmt.Fprintln(options.Output, notice)
+			}
+			return nil
 		},
 	}
 	command.Flags().BoolVar(&refresh, "refresh", false, "refresh every account before listing")
@@ -330,7 +346,11 @@ func newAccountUsageCommand(options *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			state, _ := appstate.Load(runtime.paths.State)
+			observation, err := runtime.switcher().Observe()
+			if err != nil {
+				return err
+			}
+			activeProfileID := observation.ProfileID
 			profiles := make([]vault.Profile, 0, len(data.Profiles))
 			switch {
 			case all:
@@ -342,10 +362,13 @@ func newAccountUsageCommand(options *Options) *cobra.Command {
 				}
 				profiles = append(profiles, *profile)
 			default:
-				if state.ActiveProfileID == "" {
+				if !observation.HasLive {
 					return errors.New("no managed account is active; pass an alias or --all")
 				}
-				profile, findErr := data.Find(state.ActiveProfileID)
+				if !observation.Managed {
+					return errors.New("the active account is unmanaged or ambiguous; pass a saved alias")
+				}
+				profile, findErr := data.Find(activeProfileID)
 				if findErr != nil {
 					return errors.New("the active account is unmanaged; pass a saved alias")
 				}
@@ -374,13 +397,20 @@ func newAccountUsageCommand(options *Options) *cobra.Command {
 					}
 				}
 			}
+			if !cached {
+				observation, err = runtime.switcher().Observe()
+				if err != nil {
+					return err
+				}
+				activeProfileID = observation.ProfileID
+			}
 			cache, err := runtime.usageService(options.Version).Cached()
 			if err != nil {
 				return err
 			}
 			views := make([]accountView, 0, len(profiles))
 			for _, profile := range profiles {
-				view := toView(profile, profile.ID == state.ActiveProfileID)
+				view := toView(profile, profile.ID == activeProfileID)
 				view.Usage = usageFromCache(cache.Profiles, profile.ID, refreshErrors[profile.ID], time.Now())
 				if len(profiles) == 1 && view.Usage.Status == "unavailable" {
 					if view.Usage.Error != "" {
@@ -428,8 +458,12 @@ func newAccountShowCommand(options *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			state, _ := appstate.Load(runtime.paths.State)
-			return options.render(toView(*profile, profile.ID == state.ActiveProfileID), formatView(toView(*profile, profile.ID == state.ActiveProfileID)))
+			observation, err := runtime.switcher().Observe()
+			if err != nil {
+				return err
+			}
+			view := toView(*profile, profile.ID == observation.ProfileID)
+			return options.render(view, formatView(view))
 		},
 	}
 }
@@ -485,9 +519,15 @@ func newAccountRemoveCommand(options *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			state, _ := appstate.Load(runtime.paths.State)
-			if profile.ID == state.ActiveProfileID {
+			observation, err := runtime.switcher().Observe()
+			if err != nil {
+				return err
+			}
+			if profile.ID == observation.ProfileID {
 				return errors.New("cannot remove the active account; switch or deactivate first")
+			}
+			if observation.State == switcher.AccountStateAmbiguous && profile.AccountID == observation.AccountID {
+				return errors.New("cannot remove a profile that may be active while the live account match is ambiguous")
 			}
 			removed, err := data.Remove(args[0])
 			if err != nil {
@@ -524,7 +564,10 @@ func newUseCommand(options *Options) *cobra.Command {
 			}
 			message := fmt.Sprintf("Active account: %s. Restart Codex to apply it.", result.Alias)
 			if !result.Changed {
-				message = fmt.Sprintf("Account %s is already active.", result.Alias)
+				message = fmt.Sprintf("Account %s is already active. No restart is required.", result.Alias)
+				if result.CredentialsUpdated || result.StateRepaired {
+					message = fmt.Sprintf("Account %s is already active. Reconciled changes made outside codex-switch; no restart is required.", result.Alias)
+				}
 			}
 			return options.render(result, message)
 		},
@@ -580,14 +623,68 @@ func newStatusCommand(options *Options) *cobra.Command {
 			if err := runtime.switcher().Recover(); err != nil {
 				return err
 			}
-			view, err := options.currentView()
+			observation, err := runtime.switcher().Observe()
 			if err != nil {
 				return err
 			}
-			result := map[string]any{"codexHome": runtime.home.Path, "active": view}
-			return options.render(result, fmt.Sprintf("CODEX_HOME: %s\n%s", runtime.home.Path, formatView(view)))
+			result := map[string]any{"codexHome": runtime.home.Path, "accountState": observation}
+			if view, viewErr := viewFromObservation(observation); viewErr == nil {
+				result["active"] = view
+			}
+			message := fmt.Sprintf("CODEX_HOME: %s\n%s", runtime.home.Path, formatObservation(observation))
+			return options.render(result, message)
 		},
 	}
+}
+
+func newSyncCommand(options *Options) *cobra.Command {
+	var check bool
+	var preferLive bool
+	var alias string
+	command := &cobra.Command{
+		Use:   "sync",
+		Short: "Reconcile codex-switch with the active Codex login",
+		RunE: func(*cobra.Command, []string) error {
+			if check && (preferLive || alias != "") {
+				return errors.New("--check cannot be combined with --prefer-live or --as")
+			}
+			runtime, err := options.loadRuntime(false)
+			if err != nil {
+				return err
+			}
+			if check {
+				observation, err := runtime.switcher().Observe()
+				if err != nil {
+					return err
+				}
+				return options.render(observation, formatObservation(observation))
+			}
+			result, err := runtime.switcher().Sync(switcher.SyncOptions{Alias: alias, PreferLive: preferLive})
+			if err != nil {
+				return err
+			}
+			message := "Account state is already in sync."
+			switch {
+			case result.Imported:
+				message = fmt.Sprintf("Imported and synchronized the active Codex login as %q.", result.Alias)
+			case result.CredentialsUpdated && result.StateRepaired:
+				message = fmt.Sprintf("Synchronized credentials and repaired the active account as %s.", result.Alias)
+			case result.CredentialsUpdated:
+				message = fmt.Sprintf("Synchronized the active credentials for %s.", result.Alias)
+			case result.StateRepaired:
+				if result.Alias == "" {
+					message = "Cleared stale active-account state because Codex is logged out."
+				} else {
+					message = fmt.Sprintf("Repaired the active account as %s; Codex credentials were not replaced.", result.Alias)
+				}
+			}
+			return options.render(result, message)
+		},
+	}
+	command.Flags().BoolVar(&check, "check", false, "inspect account drift without changing state")
+	command.Flags().BoolVar(&preferLive, "prefer-live", false, "adopt the active Codex credentials when generations conflict")
+	command.Flags().StringVar(&alias, "as", "", "import an unmanaged active login using this alias")
+	return command
 }
 
 func newDoctorCommand(options *Options) *cobra.Command {
@@ -647,7 +744,11 @@ func newSelectCommand(options *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return options.render(result, fmt.Sprintf("Active account: %s. Restart Codex to apply it.", result.Alias))
+			message := fmt.Sprintf("Active account: %s. Restart Codex to apply it.", result.Alias)
+			if !result.Changed {
+				message = fmt.Sprintf("Account %s is already active. No restart is required.", result.Alias)
+			}
+			return options.render(result, message)
 		},
 	}
 	command.Flags().BoolVar(&allowRunning, "allow-running", false, "switch even when a Codex process is detected")
@@ -878,35 +979,86 @@ func (options *Options) currentView() (accountView, error) {
 	if err != nil {
 		return accountView{}, err
 	}
-	data, err := runtime.manager.Load()
+	observation, err := runtime.switcher().Observe()
 	if err != nil {
 		return accountView{}, err
 	}
-	state, err := appstate.Load(runtime.paths.State)
-	if err != nil {
-		return accountView{}, err
-	}
-	raw, err := runtime.home.ReadAuth()
-	if errors.Is(err, os.ErrNotExist) {
+	return viewFromObservation(observation)
+}
+
+func viewFromObservation(observation switcher.Observation) (accountView, error) {
+	if !observation.HasLive {
 		return accountView{}, errors.New("no account is active")
 	}
-	if err != nil {
-		return accountView{}, err
+	if observation.State == switcher.AccountStateAmbiguous {
+		return accountView{}, errors.New("multiple saved profiles match the active Codex login; run 'codex-switch sync --check'")
 	}
-	document, err := authschema.Parse(raw)
-	if err != nil {
-		return accountView{}, err
+	if observation.Managed {
+		return accountView{
+			ID:              observation.ProfileID,
+			Alias:           observation.Alias,
+			AccountID:       observation.AccountID,
+			WorkspaceID:     observation.WorkspaceID,
+			Email:           observation.Email,
+			Source:          observation.Source,
+			Active:          true,
+			AuthenticatedAt: observation.AuthenticatedAt,
+			LastUsedAt:      observation.LastUsedAt,
+		}, nil
 	}
-	if state.ActiveProfileID != "" {
-		if profile, findErr := data.Find(state.ActiveProfileID); findErr == nil && profile.AccountID == document.Tokens.AccountID {
-			return toView(*profile, true), nil
+	return accountView{AccountID: observation.AccountID, WorkspaceID: observation.WorkspaceID, Email: observation.Email, Active: true, Alias: "unmanaged"}, nil
+}
+
+func formatObservation(observation switcher.Observation) string {
+	identity := observation.Email
+	if identity == "" {
+		identity = observation.AccountID
+	}
+	switch observation.State {
+	case switcher.AccountStateInSync:
+		return fmt.Sprintf("Active account: %s (%s)\nState: in sync", observation.Alias, identity)
+	case switcher.AccountStateExternalLogin, switcher.AccountStateExternalLoginWithRefresh:
+		return fmt.Sprintf("Active account: %s (%s)\nState: Codex was logged in outside codex-switch; run 'codex-switch sync'", observation.Alias, identity)
+	case switcher.AccountStateCredentialRefresh:
+		return fmt.Sprintf("Active account: %s (%s)\nState: Codex credentials were refreshed; run 'codex-switch sync'", observation.Alias, identity)
+	case switcher.AccountStateStateDrift:
+		return fmt.Sprintf("Active account: %s (%s)\nState: local account metadata is stale; run 'codex-switch sync'", observation.Alias, identity)
+	case switcher.AccountStateCredentialConflict:
+		return fmt.Sprintf("Active account: %s (%s)\nState: credential generations conflict; inspect before using 'codex-switch sync --prefer-live'", observation.Alias, identity)
+	case switcher.AccountStateUnmanaged:
+		return fmt.Sprintf("Active account: unmanaged (%s)\nState: run 'codex-switch sync --as <alias>' to preserve it", identity)
+	case switcher.AccountStateAmbiguous:
+		return fmt.Sprintf("Active account: ambiguous (%s)\nState: multiple saved profiles match; no automatic changes are allowed", identity)
+	case switcher.AccountStateLoggedOut:
+		return "Active account: none\nState: Codex logged out outside codex-switch; run 'codex-switch sync'"
+	default:
+		return "Active account: none\nState: in sync"
+	}
+}
+
+func observationNotice(observation switcher.Observation) string {
+	switch observation.State {
+	case switcher.AccountStateExternalLogin, switcher.AccountStateExternalLoginWithRefresh:
+		recorded := observation.RecordedAlias
+		if recorded == "" {
+			recorded = "none"
 		}
+		return fmt.Sprintf("Note: Codex is actually using %s, not the last recorded account %s; run 'codex-switch sync'.", observation.Alias, recorded)
+	case switcher.AccountStateCredentialRefresh:
+		return fmt.Sprintf("Note: Codex refreshed %s outside codex-switch; run 'codex-switch sync'.", observation.Alias)
+	case switcher.AccountStateStateDrift:
+		return fmt.Sprintf("Note: local state for %s is stale; run 'codex-switch sync'.", observation.Alias)
+	case switcher.AccountStateCredentialConflict:
+		return "Warning: live and saved credential generations conflict; run 'codex-switch sync --check'."
+	case switcher.AccountStateUnmanaged:
+		return "Note: the active Codex login is unmanaged; run 'codex-switch sync --as <alias>' to preserve it."
+	case switcher.AccountStateAmbiguous:
+		return "Warning: multiple saved profiles match the active Codex login; run 'codex-switch sync --check'."
+	case switcher.AccountStateLoggedOut:
+		return "Note: Codex is logged out but stale active-account state remains; run 'codex-switch sync'."
+	default:
+		return ""
 	}
-	matches := data.FindByAccount(document.Tokens.AccountID, document.WorkspaceID)
-	if len(matches) == 1 {
-		return toView(*matches[0], true), nil
-	}
-	return accountView{AccountID: document.Tokens.AccountID, WorkspaceID: document.WorkspaceID, Email: document.Email, Active: true, Alias: "unmanaged"}, nil
 }
 
 func addDocument(manager *vault.Manager, alias, source string, document authschema.Document, replace bool) (vault.Profile, error) {

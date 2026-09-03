@@ -69,6 +69,10 @@ codex-switch account list
 codex-switch account usage work
 codex-switch use work
 codex-switch current
+
+# Detect or reconcile a login performed directly in Codex.
+codex-switch sync --check
+codex-switch sync
 ```
 
 Use `codex-switch doctor` before reporting a problem. Machine-readable output is
@@ -106,6 +110,7 @@ contains usage numbers and public account metadata only, never tokens.
 codex-switch init
 codex-switch current
 codex-switch status
+codex-switch sync [--check] [--prefer-live] [--as <alias>]
 codex-switch doctor
 codex-switch use <alias>
 codex-switch deactivate
@@ -125,6 +130,31 @@ codex-switch vault import --input backup.cxs
 codex-switch vault rotate-key
 codex-switch update [--check]
 ```
+
+## Logins changed outside codex-switch
+
+The live `$CODEX_HOME/auth.json` is the source of truth for the active account.
+`current`, `status`, `account list`, `account show`, and the default
+`account usage` selection inspect that live identity instead of trusting the
+last account recorded by `codex-switch`.
+
+If you log in directly through Codex, inspect and safely adopt the change with:
+
+```bash
+codex-switch sync --check
+codex-switch sync
+```
+
+When the live login belongs to another saved profile, `sync` repairs the active
+pointer and adopts only a provably newer credential generation. An unmanaged
+login can be preserved with `codex-switch sync --as <alias>`. If generations
+cannot be ordered, the tool leaves both sides unchanged until you explicitly
+run `codex-switch sync --prefer-live`.
+
+Running `codex-switch use <alias>` when that alias is already live performs the
+same safe reconciliation without rewriting `auth.json`, closing Codex, or
+requiring a restart. A real switch to a different account still requires Codex
+to be stopped.
 
 ## What a switch changes
 

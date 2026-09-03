@@ -2,6 +2,7 @@ package switcher
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -14,6 +15,292 @@ import (
 	appstate "github.com/SilkageNet/codex-switch/internal/state"
 	"github.com/SilkageNet/codex-switch/internal/vault"
 )
+
+func TestObserveUsesLiveAccountInsteadOfRecordedState(t *testing.T) {
+	service, manager, data := testService(t)
+	kun := profileFor(t, "kun", "account-kun", "refresh-kun", "2026-08-20T00:00:00Z")
+	silkage := profileFor(t, "silkage", "account-silkage", "refresh-silkage", "2026-08-20T00:00:00Z")
+	if err := data.Add(kun, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := data.Add(silkage, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Save(data); err != nil {
+		t.Fatal(err)
+	}
+	savedKun, _ := data.Find("kun")
+	savedSilkage, _ := data.Find("silkage")
+	if err := service.Home.WriteAuth(savedSilkage.Auth); err != nil {
+		t.Fatal(err)
+	}
+	if err := appstate.Save(service.Paths.State, appstate.State{ActiveProfileID: savedKun.ID, AuthHash: "stale"}); err != nil {
+		t.Fatal(err)
+	}
+
+	observation, err := service.Observe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observation.ProfileID != savedSilkage.ID || observation.Alias != "silkage" || observation.State != AccountStateExternalLogin {
+		t.Fatalf("unexpected observation: %#v", observation)
+	}
+	if observation.RecordedProfileID != savedKun.ID || observation.RecordedAlias != "kun" || !observation.NeedsSync {
+		t.Fatalf("stale recorded state was not reported: %#v", observation)
+	}
+	state, err := appstate.Load(service.Paths.State)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.ActiveProfileID != savedKun.ID {
+		t.Fatal("read-only observation modified recorded state")
+	}
+}
+
+func TestSyncRepairsExternalLoginAndAdoptsNewerCredentials(t *testing.T) {
+	service, manager, data := testService(t)
+	kun := profileFor(t, "kun", "account-kun", "refresh-kun", "2026-08-20T00:00:00Z")
+	silkage := profileFor(t, "silkage", "account-silkage", "refresh-old", "2026-08-20T00:00:00Z")
+	if err := data.Add(kun, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := data.Add(silkage, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Save(data); err != nil {
+		t.Fatal(err)
+	}
+	savedKun, _ := data.Find("kun")
+	savedSilkage, _ := data.Find("silkage")
+	live := authBytes("account-silkage", "refresh-new", "2026-08-20T01:00:00Z")
+	if err := service.Home.WriteAuth(live); err != nil {
+		t.Fatal(err)
+	}
+	if err := appstate.Save(service.Paths.State, appstate.State{ActiveProfileID: savedKun.ID, AuthHash: "stale"}); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.Sync(SyncOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Changed || !result.CredentialsUpdated || !result.StateRepaired || result.ProfileID != savedSilkage.ID {
+		t.Fatalf("unexpected sync result: %#v", result)
+	}
+	loaded, err := manager.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := loaded.Find("silkage")
+	document, _ := authschema.Parse(updated.Auth)
+	if document.Tokens.RefreshToken != "refresh-new" {
+		t.Fatal("newer live credentials were not saved")
+	}
+	state, err := appstate.Load(service.Paths.State)
+	if err != nil {
+		t.Fatal(err)
+	}
+	liveHash, _ := service.Home.AuthHash()
+	if state.ActiveProfileID != savedSilkage.ID || state.AuthHash != liveHash {
+		t.Fatalf("active state was not repaired: %#v", state)
+	}
+}
+
+func TestSyncRequiresExplicitPreferenceForAmbiguousCredentials(t *testing.T) {
+	service, manager, data := testService(t)
+	profile := profileFor(t, "silkage", "account-silkage", "refresh-old", "2026-08-20T00:00:00Z")
+	if err := data.Add(profile, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Save(data); err != nil {
+		t.Fatal(err)
+	}
+	live := authBytes("account-silkage", "refresh-new", "2026-08-20T00:00:00Z")
+	if err := service.Home.WriteAuth(live); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Sync(SyncOptions{}); err == nil {
+		t.Fatal("expected ambiguous credential protection")
+	}
+	loaded, _ := manager.Load()
+	saved, _ := loaded.Find("silkage")
+	savedDocument, _ := authschema.Parse(saved.Auth)
+	if savedDocument.Tokens.RefreshToken != "refresh-old" {
+		t.Fatal("ambiguous credentials were overwritten without consent")
+	}
+
+	result, err := service.Sync(SyncOptions{PreferLive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.CredentialsUpdated {
+		t.Fatalf("live credentials were not adopted: %#v", result)
+	}
+}
+
+func TestSyncImportsUnmanagedLiveLogin(t *testing.T) {
+	service, manager, _ := testService(t)
+	if err := service.Home.WriteAuth(authBytes("account-new", "refresh-new", "2026-08-20T00:00:00Z")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Sync(SyncOptions{}); err == nil {
+		t.Fatal("expected unmanaged login protection")
+	}
+	result, err := service.Sync(SyncOptions{Alias: "new"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Imported || !result.CredentialsUpdated || result.Alias != "new" {
+		t.Fatalf("unexpected import result: %#v", result)
+	}
+	loaded, _ := manager.Load()
+	if _, err := loaded.Find("new"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestUseRepairsExternallyActivatedTargetWithoutProjection(t *testing.T) {
+	service, manager, data := testService(t)
+	kun := profileFor(t, "kun", "account-kun", "refresh-kun", "2026-08-20T00:00:00Z")
+	silkage := profileFor(t, "silkage", "account-silkage", "refresh-silkage", "2026-08-20T00:00:00Z")
+	if err := data.Add(kun, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := data.Add(silkage, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Save(data); err != nil {
+		t.Fatal(err)
+	}
+	savedKun, _ := data.Find("kun")
+	savedSilkage, _ := data.Find("silkage")
+	if err := service.Home.WriteAuth(savedSilkage.Auth); err != nil {
+		t.Fatal(err)
+	}
+	if err := appstate.Save(service.Paths.State, appstate.State{ActiveProfileID: savedKun.ID, AuthHash: "stale"}); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.Use("silkage", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Changed || !result.StateRepaired {
+		t.Fatalf("unexpected use result: %#v", result)
+	}
+	live, _ := service.Home.ReadAuth()
+	document, _ := authschema.Parse(live)
+	if document.Tokens.AccountID != "account-silkage" || document.Tokens.RefreshToken != "refresh-silkage" {
+		t.Fatal("already-active credentials were re-projected")
+	}
+}
+
+func TestObserveRejectsDuplicateIdentityWithoutExactCredentialMatch(t *testing.T) {
+	service, manager, data := testService(t)
+	for _, alias := range []string{"first", "second"} {
+		if err := data.Add(profileFor(t, alias, "account-a", "refresh-"+alias, "2026-08-20T00:00:00Z"), false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := manager.Save(data); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Home.WriteAuth(authBytes("account-a", "refresh-live", "2026-08-20T01:00:00Z")); err != nil {
+		t.Fatal(err)
+	}
+	observation, err := service.Observe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observation.State != AccountStateAmbiguous || observation.Managed {
+		t.Fatalf("duplicate identity was not treated as ambiguous: %#v", observation)
+	}
+	if _, err := service.Sync(SyncOptions{}); err == nil || errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unexpected ambiguous sync error: %v", err)
+	}
+}
+
+func TestIdentifyCurrentUsesWorkspaceWhenAccountHasMultipleProfiles(t *testing.T) {
+	_, _, data := testService(t)
+	first := profileFor(t, "first", "account-a", "refresh-first", "2026-08-20T00:00:00Z")
+	first.WorkspaceID = "workspace-a"
+	second := profileFor(t, "second", "account-a", "refresh-second", "2026-08-20T00:00:00Z")
+	second.WorkspaceID = "workspace-b"
+	if err := data.Add(first, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := data.Add(second, false); err != nil {
+		t.Fatal(err)
+	}
+	live, err := authschema.Parse(authBytes("account-a", "refresh-live", "2026-08-20T01:00:00Z"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	live.WorkspaceID = "workspace-b"
+	profile, err := identifyCurrent(&data, live)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile == nil || profile.Alias != "second" {
+		t.Fatalf("workspace did not disambiguate account profiles: %#v", profile)
+	}
+}
+
+func TestSyncRequiresPreferenceBeforeReplacingNewerSavedCredentials(t *testing.T) {
+	service, manager, data := testService(t)
+	profile := profileFor(t, "silkage", "account-silkage", "refresh-newer", "2026-08-20T01:00:00Z")
+	if err := data.Add(profile, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Save(data); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Home.WriteAuth(authBytes("account-silkage", "refresh-live", "2026-08-20T00:00:00Z")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Sync(SyncOptions{}); err == nil {
+		t.Fatal("expected newer saved credential protection")
+	}
+	loaded, _ := manager.Load()
+	saved, _ := loaded.Find("silkage")
+	savedDocument, _ := authschema.Parse(saved.Auth)
+	if savedDocument.Tokens.RefreshToken != "refresh-newer" {
+		t.Fatal("newer saved credentials were replaced without consent")
+	}
+	result, err := service.Sync(SyncOptions{PreferLive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.CredentialsUpdated {
+		t.Fatalf("explicit live preference was not applied: %#v", result)
+	}
+}
+
+func TestSyncClearsRecordedAccountAfterExternalLogout(t *testing.T) {
+	service, manager, data := testService(t)
+	profile := profileFor(t, "silkage", "account-silkage", "refresh", "2026-08-20T00:00:00Z")
+	if err := data.Add(profile, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Save(data); err != nil {
+		t.Fatal(err)
+	}
+	saved, _ := data.Find("silkage")
+	if err := appstate.Save(service.Paths.State, appstate.State{ActiveProfileID: saved.ID, AuthHash: "old"}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.Sync(SyncOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.StateRepaired || result.DetectedState != AccountStateLoggedOut {
+		t.Fatalf("unexpected logout sync result: %#v", result)
+	}
+	state, _ := appstate.Load(service.Paths.State)
+	if state.ActiveProfileID != "" || state.AuthHash != "" {
+		t.Fatalf("stale state was not cleared: %#v", state)
+	}
+}
 
 func TestUseAdoptsRotatedLiveTokenAndSwitches(t *testing.T) {
 	service, manager, data := testService(t)
