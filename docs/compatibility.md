@@ -64,6 +64,10 @@ Usage querying initializes `codex app-server` and calls:
 - `account/rateLimits/read`
 - `account/usage/read`
 
+When returned by `account/rateLimits/read`, the client also preserves
+`rateLimitResetCredits.availableCount` and its optional grant/expiration detail
+rows. Older services that omit this optional object remain supported.
+
 If one usage method is unavailable, the other is still cached and marked
 partial. If both are unavailable, update the installed Codex client. These
 methods require a ChatGPT/Codex service login; API-key-only and Amazon Bedrock

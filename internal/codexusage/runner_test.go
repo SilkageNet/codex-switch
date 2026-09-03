@@ -25,6 +25,12 @@ func TestRunnerQueriesUsageAndReturnsRefreshedCredentials(t *testing.T) {
 	if snapshot.MainRateLimit() == nil || snapshot.MainRateLimit().Primary.UsedPercent != 21 {
 		t.Fatalf("unexpected main rate limit: %#v", snapshot.MainRateLimit())
 	}
+	if snapshot.RateLimits.RateLimitResetCredits == nil || snapshot.RateLimits.RateLimitResetCredits.AvailableCount != 2 {
+		t.Fatalf("unexpected reset credits: %#v", snapshot.RateLimits.RateLimitResetCredits)
+	}
+	if credits := snapshot.RateLimits.RateLimitResetCredits.Credits; len(credits) != 1 || credits[0].ExpiresAt == nil || *credits[0].ExpiresAt != 1784246400 {
+		t.Fatalf("unexpected reset credit details: %#v", credits)
+	}
 	if snapshot.TokenUsage.Summary.LifetimeTokens == nil || *snapshot.TokenUsage.Summary.LifetimeTokens != 1234567 {
 		t.Fatalf("unexpected token usage: %#v", snapshot.TokenUsage)
 	}
@@ -110,6 +116,18 @@ func TestCodexUsageHelperProcess(t *testing.T) {
 			_ = encoder.Encode(map[string]any{"id": json.RawMessage(id), "result": map[string]any{
 				"rateLimits":          map[string]any{"planType": "pro", "primary": map[string]any{"usedPercent": 21, "windowDurationMins": 300}},
 				"rateLimitsByLimitId": map[string]any{"codex": map[string]any{"planType": "pro", "primary": map[string]any{"usedPercent": 21, "windowDurationMins": 300}}},
+				"rateLimitResetCredits": map[string]any{
+					"availableCount": 2,
+					"credits": []map[string]any{{
+						"id":          "RateLimitResetCredit_1",
+						"resetType":   "codexRateLimits",
+						"status":      "available",
+						"grantedAt":   1781654400,
+						"expiresAt":   1784246400,
+						"title":       "Rate-limit reset",
+						"description": "Reset an eligible Codex rate-limit window.",
+					}},
+				},
 			}})
 		case "account/usage/read":
 			if os.Getenv("CODEX_USAGE_PARTIAL") == "1" {
