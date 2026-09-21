@@ -5,7 +5,7 @@ go 1.26.7
 require (
 	github.com/minio/selfupdate v0.6.0
 	github.com/spf13/cobra v1.10.2
-	golang.org/x/crypto v0.55.0
+	golang.org/x/crypto v0.57.0
 	golang.org/x/mod v0.40.0
 	golang.org/x/sys v0.48.0
 	golang.org/x/term v0.46.0
