@@ -42,6 +42,40 @@ func TestFindBinaryAcceptsExplicitStandaloneBinary(t *testing.T) {
 	}
 }
 
+func TestFindMacOSBundledBinarySupportsCurrentChatGPTLayout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("executable mode bits are not available on Windows")
+	}
+	applications := t.TempDir()
+	want := filepath.Join(applications, "ChatGPT.app", "Contents", "Resources", "codex-cli", "CodexCLI.app", "Contents", "MacOS", "codex")
+	if err := os.MkdirAll(filepath.Dir(want), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(want, []byte("test"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := findMacOSBundledBinary([]string{applications}); got != want {
+		t.Fatalf("findMacOSBundledBinary() = %q, want %q", got, want)
+	}
+}
+
+func TestFindMacOSBundledBinaryIgnoresNonExecutableFiles(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("executable mode bits are not available on Windows")
+	}
+	applications := t.TempDir()
+	path := filepath.Join(applications, "ChatGPT.app", "Contents", "Resources", "codex")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("test"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := findMacOSBundledBinary([]string{applications}); got != "" {
+		t.Fatalf("findMacOSBundledBinary() returned non-executable file %q", got)
+	}
+}
+
 func TestFindBinarySkipsWindowsDesktopBundleOnPath(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("Windows package paths are only rejected on Windows")

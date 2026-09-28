@@ -58,6 +58,11 @@ searching `PATH` and returns an actionable error when no standalone CLI is
 available. A standalone CLI can also be selected with `CODEX_BINARY` or
 `--codex-binary`.
 
+On macOS, discovery checks `PATH`, `/Applications`, and `~/Applications`. Both
+the retained `Codex.app/Contents/Resources/codex` compatibility path and the
+nested `ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex`
+layout are supported, along with their direct/nested bundle variants.
+
 Usage querying initializes `codex app-server` and calls:
 
 - `account/read`

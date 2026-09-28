@@ -99,6 +99,13 @@ codex --version
 codex-switch account usage <alias>
 ```
 
+On macOS, a standalone `codex` command is optional when the official Codex or
+ChatGPT desktop app is installed in `/Applications` or `~/Applications`.
+`codex-switch` automatically discovers both the retained Codex.app compatibility
+path and the current nested ChatGPT.app CLI. Run `codex-switch doctor` to see the
+exact executable path selected. Nonstandard application locations still require
+`--codex-binary <path>` or `CODEX_BINARY`.
+
 On Windows, a path under
 `C:\Program Files\WindowsApps\OpenAI.Codex_*\app\resources\codex.exe` belongs to
 the desktop app package. Windows does not allow `codex-switch` to launch that

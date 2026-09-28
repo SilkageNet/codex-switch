@@ -35,10 +35,46 @@ func FindBinary(override string) (string, error) {
 		}
 		return validateBinary(path)
 	}
-	if path := "/Applications/ChatGPT.app/Contents/Resources/codex"; fileExists(path) {
-		return path, nil
+	if runtime.GOOS == "darwin" {
+		if path := findMacOSBundledBinary(macOSApplicationDirectories()); path != "" {
+			return path, nil
+		}
 	}
-	return "", fmt.Errorf("codex executable not found; install Codex CLI or set CODEX_BINARY")
+	return "", fmt.Errorf("codex executable not found on PATH or in a supported app bundle; install Codex CLI or set CODEX_BINARY")
+}
+
+func macOSApplicationDirectories() []string {
+	directories := []string{"/Applications"}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		directories = append(directories, filepath.Join(home, "Applications"))
+	}
+	return directories
+}
+
+func findMacOSBundledBinary(applicationDirectories []string) string {
+	relativePaths := []string{
+		filepath.Join("Codex.app", "Contents", "Resources", "codex"),
+		filepath.Join("Codex.app", "Contents", "Resources", "codex-cli", "CodexCLI.app", "Contents", "MacOS", "codex"),
+		filepath.Join("ChatGPT.app", "Contents", "Resources", "codex-cli", "CodexCLI.app", "Contents", "MacOS", "codex"),
+		filepath.Join("ChatGPT.app", "Contents", "Resources", "codex"),
+	}
+	for _, directory := range applicationDirectories {
+		for _, relative := range relativePaths {
+			path := filepath.Join(directory, relative)
+			if executableFileExists(path) {
+				return path
+			}
+		}
+	}
+	return ""
+}
+
+func executableFileExists(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() || info.Mode()&0o111 == 0 {
+		return false
+	}
+	return true
 }
 
 func validateBinary(path string) (string, error) {
@@ -122,9 +158,4 @@ func withEnvironment(environment []string, key, value string) []string {
 		}
 	}
 	return append(result, prefix+value)
-}
-
-func fileExists(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && !info.IsDir()
 }
