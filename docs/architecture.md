@@ -82,17 +82,20 @@ acquire shared operation lock
   -> create one temporary CODEX_HOME per profile
   -> write only that profile plus file-store config
   -> initialize the official Codex App Server
-  -> read account/rateLimits/read and account/usage/read
+  -> read account/read, account/rateLimits/read, and account/usage/read in order
   -> retain quota reset times and any earned-reset count and expiration metadata
   -> stop the server and delete the temporary home
-  -> reconcile any newer credential generation
+  -> reconcile any newer credential generation, including one produced by a failed query
   -> atomically save credential-free usage snapshots
 ```
 
 The live account selection never changes. If Codex rotates a refresh token while
 answering the query, identity and generation checks run before the new document
 is saved. For an active profile, compare-before-replace protects the live
-projection from a concurrent Codex write.
+projection from a concurrent Codex write. Transient failures are retried with
+backoff using the newest validated credential generation returned by the prior
+attempt. Multi-account refreshes are intentionally sequential so independent
+App Server processes do not compete for startup or authentication resources.
 
 ## Data locations
 

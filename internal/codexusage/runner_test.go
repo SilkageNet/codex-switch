@@ -58,6 +58,22 @@ func TestRunnerAllowsOneUnsupportedUsageMethod(t *testing.T) {
 	}
 }
 
+func TestRunnerPreservesBothUsageMethodErrors(t *testing.T) {
+	runner := helperRunnerMode(t, false, true)
+	_, updated, err := runner.Query(context.Background(), testAuth("account-a", "refresh-old", "2026-08-20T00:00:00Z"))
+	if err == nil {
+		t.Fatal("expected usage query error")
+	}
+	for _, expected := range []string{"account/rateLimits/read failed (-32001): overloaded", "account/usage/read failed (-32601): method not found"} {
+		if !strings.Contains(err.Error(), expected) {
+			t.Fatalf("error %q does not contain %q", err, expected)
+		}
+	}
+	if !strings.Contains(string(updated), "refresh-new") {
+		t.Fatalf("rotated credentials were lost on usage failure: %s", updated)
+	}
+}
+
 func TestProtocolErrorRedactsChildDiagnostics(t *testing.T) {
 	err := protocolError("query", context.DeadlineExceeded, "secret child output")
 	if strings.Contains(err.Error(), "secret child output") || !strings.Contains(err.Error(), "redacted") {
@@ -74,6 +90,10 @@ func TestRunnerReturnsBinaryDiscoveryError(t *testing.T) {
 }
 
 func helperRunner(t *testing.T, partial bool) Runner {
+	return helperRunnerMode(t, partial, false)
+}
+
+func helperRunnerMode(t *testing.T, partial, allError bool) Runner {
 	t.Helper()
 	return Runner{
 		Binary:        os.Args[0],
@@ -83,6 +103,9 @@ func helperRunner(t *testing.T, partial bool) Runner {
 			command.Env = append(os.Environ(), "CODEX_USAGE_HELPER=1")
 			if partial {
 				command.Env = append(command.Env, "CODEX_USAGE_PARTIAL=1")
+			}
+			if allError {
+				command.Env = append(command.Env, "CODEX_USAGE_ALL_ERROR=1")
 			}
 			return command
 		},
@@ -113,6 +136,10 @@ func TestCodexUsageHelperProcess(t *testing.T) {
 				"requiresOpenaiAuth": true,
 			}})
 		case "account/rateLimits/read":
+			if os.Getenv("CODEX_USAGE_ALL_ERROR") == "1" {
+				_ = encoder.Encode(map[string]any{"id": json.RawMessage(id), "error": map[string]any{"code": -32001, "message": "overloaded"}})
+				continue
+			}
 			_ = encoder.Encode(map[string]any{"id": json.RawMessage(id), "result": map[string]any{
 				"rateLimits":          map[string]any{"planType": "pro", "primary": map[string]any{"usedPercent": 21, "windowDurationMins": 300}},
 				"rateLimitsByLimitId": map[string]any{"codex": map[string]any{"planType": "pro", "primary": map[string]any{"usedPercent": 21, "windowDurationMins": 300}}},
@@ -130,7 +157,7 @@ func TestCodexUsageHelperProcess(t *testing.T) {
 				},
 			}})
 		case "account/usage/read":
-			if os.Getenv("CODEX_USAGE_PARTIAL") == "1" {
+			if os.Getenv("CODEX_USAGE_PARTIAL") == "1" || os.Getenv("CODEX_USAGE_ALL_ERROR") == "1" {
 				_ = encoder.Encode(map[string]any{"id": json.RawMessage(id), "error": map[string]any{"code": -32601, "message": "method not found"}})
 			} else {
 				lifetime := int64(1234567)

@@ -123,7 +123,11 @@ codex-switch account usage <alias> --cached
 ```
 
 A stale cached snapshot is labeled `stale`; a failed refresh keeps that snapshot
-and displays a warning rather than discarding useful data.
+and displays the complete redacted error rather than discarding useful data.
+The tool retries a failed isolated query up to three times with backoff and
+queries saved accounts sequentially to avoid competing Codex App Server startup
+or authentication work. The last failure remains visible with `--cached` until
+that account refreshes successfully.
 
 ## Interrupted switch journal
 

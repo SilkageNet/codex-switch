@@ -125,35 +125,13 @@ func (runner Runner) Query(ctx context.Context, auth json.RawMessage) (Snapshot,
 	if err := encoder.Encode(rpcRequest{Method: "initialized", Params: map[string]any{}}); err != nil {
 		return Snapshot{}, nil, fmt.Errorf("send initialized notification: %w", err)
 	}
-	requests := []struct {
-		id     int
-		method string
-		params any
-	}{
-		{id: 1, method: "account/read", params: map[string]bool{"refreshToken": false}},
-		{id: 2, method: "account/rateLimits/read"},
-		{id: 3, method: "account/usage/read"},
+	if err := sendRequest(encoder, 1, "account/read", map[string]bool{"refreshToken": false}); err != nil {
+		return Snapshot{}, nil, err
 	}
-	for _, request := range requests {
-		if err := sendRequest(encoder, request.id, request.method, request.params); err != nil {
-			return Snapshot{}, nil, err
-		}
-	}
-	responses, err := readResponses(scanner, 1, 2, 3)
+	accountResponse, err := readResponse(scanner, 1)
 	if err != nil {
-		return Snapshot{}, nil, protocolError("read account usage", err, stderr.String())
+		return Snapshot{}, nil, protocolError("read account", err, stderr.String())
 	}
-	_ = stdin.Close()
-	if err := command.Wait(); err != nil {
-		waited = true
-		if ctx.Err() != nil {
-			return Snapshot{}, nil, fmt.Errorf("query account usage: %w", ctx.Err())
-		}
-		return Snapshot{}, nil, protocolError("Codex app server exited", err, stderr.String())
-	}
-	waited = true
-
-	accountResponse := responses[1]
 	if accountResponse.Error != nil {
 		return Snapshot{}, nil, responseError("account/read", accountResponse.Error)
 	}
@@ -164,29 +142,30 @@ func (runner Runner) Query(ctx context.Context, auth json.RawMessage) (Snapshot,
 	if account.Account == nil || account.Account.Type != "chatgpt" {
 		return Snapshot{}, nil, errors.New("saved profile is not recognized as a ChatGPT account by Codex")
 	}
-	snapshot := Snapshot{FetchedAt: time.Now().UTC(), PlanType: account.Account.PlanType}
-	if response := responses[2]; response.Error != nil {
-		snapshot.Partial = append(snapshot.Partial, "rateLimits")
-	} else {
-		var value RateLimits
-		if err := json.Unmarshal(response.Result, &value); err != nil {
-			return Snapshot{}, nil, fmt.Errorf("decode account/rateLimits/read response: %w", err)
-		}
-		snapshot.RateLimits = &value
-	}
-	if response := responses[3]; response.Error != nil {
-		snapshot.Partial = append(snapshot.Partial, "tokenUsage")
-	} else {
-		var value TokenUsage
-		if err := json.Unmarshal(response.Result, &value); err != nil {
-			return Snapshot{}, nil, fmt.Errorf("decode account/usage/read response: %w", err)
-		}
-		snapshot.TokenUsage = &value
-	}
-	if snapshot.RateLimits == nil && snapshot.TokenUsage == nil {
-		return Snapshot{}, nil, errors.New("this Codex version does not provide account usage methods; update Codex and retry")
-	}
 
+	if err := sendRequest(encoder, 2, "account/rateLimits/read", nil); err != nil {
+		return Snapshot{}, nil, err
+	}
+	rateLimitsResponse, err := readResponse(scanner, 2)
+	if err != nil {
+		return Snapshot{}, nil, protocolError("read account rate limits", err, stderr.String())
+	}
+	if err := sendRequest(encoder, 3, "account/usage/read", nil); err != nil {
+		return Snapshot{}, nil, err
+	}
+	tokenUsageResponse, err := readResponse(scanner, 3)
+	if err != nil {
+		return Snapshot{}, nil, protocolError("read account token usage", err, stderr.String())
+	}
+	_ = stdin.Close()
+	if err := command.Wait(); err != nil {
+		waited = true
+		if ctx.Err() != nil {
+			return Snapshot{}, nil, fmt.Errorf("query account usage: %w", ctx.Err())
+		}
+		return Snapshot{}, nil, protocolError("Codex app server exited", err, stderr.String())
+	}
+	waited = true
 	updated, err := atomicfile.ReadLimited(filepath.Join(temporaryHome, "auth.json"), 2<<20)
 	if err != nil {
 		return Snapshot{}, nil, fmt.Errorf("read refreshed account credentials: %w", err)
@@ -197,6 +176,32 @@ func (runner Runner) Query(ctx context.Context, auth json.RawMessage) (Snapshot,
 	}
 	if updatedDocument.Tokens.AccountID != document.Tokens.AccountID {
 		return Snapshot{}, nil, errors.New("codex returned credentials for a different account")
+	}
+
+	snapshot := Snapshot{FetchedAt: time.Now().UTC(), PlanType: account.Account.PlanType}
+	if rateLimitsResponse.Error != nil {
+		snapshot.Partial = append(snapshot.Partial, "rateLimits")
+	} else {
+		var value RateLimits
+		if err := json.Unmarshal(rateLimitsResponse.Result, &value); err != nil {
+			return Snapshot{}, nil, fmt.Errorf("decode account/rateLimits/read response: %w", err)
+		}
+		snapshot.RateLimits = &value
+	}
+	if tokenUsageResponse.Error != nil {
+		snapshot.Partial = append(snapshot.Partial, "tokenUsage")
+	} else {
+		var value TokenUsage
+		if err := json.Unmarshal(tokenUsageResponse.Result, &value); err != nil {
+			return Snapshot{}, nil, fmt.Errorf("decode account/usage/read response: %w", err)
+		}
+		snapshot.TokenUsage = &value
+	}
+	if snapshot.RateLimits == nil && snapshot.TokenUsage == nil {
+		return Snapshot{}, updatedDocument.Raw, fmt.Errorf("account usage requests failed: %w", errors.Join(
+			responseError("account/rateLimits/read", rateLimitsResponse.Error),
+			responseError("account/usage/read", tokenUsageResponse.Error),
+		))
 	}
 	return snapshot, updatedDocument.Raw, nil
 }

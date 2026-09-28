@@ -7,6 +7,7 @@ import (
 
 	"github.com/SilkageNet/codex-switch/internal/codexusage"
 	"github.com/SilkageNet/codex-switch/internal/switcher"
+	"github.com/SilkageNet/codex-switch/internal/usagecache"
 )
 
 func TestSummarizeUsage(t *testing.T) {
@@ -35,6 +36,24 @@ func TestSummarizeUsage(t *testing.T) {
 	plan, limits, resets, tokens, updated := summarizeUsage(view, now)
 	if plan != "pro" || limits != "5h 21% ↻2h 15m · 7d 81% ↻3d 4h" || resets != "2 exp 1d 2h" || tokens != "1.2M" || updated != "just now" {
 		t.Fatalf("unexpected summary: %q %q %q %q %q", plan, limits, resets, tokens, updated)
+	}
+}
+
+func TestUsageFromCacheRetainsLastRefreshFailure(t *testing.T) {
+	now := time.Date(2026, 8, 21, 12, 0, 0, 0, time.UTC)
+	cache := usagecache.Cache{
+		Profiles: map[string]codexusage.Snapshot{"profile-a": {FetchedAt: now.Add(-2 * time.Minute), PlanType: "pro"}},
+		Failures: map[string]usagecache.Failure{"profile-a": {AttemptedAt: now.Add(-time.Minute), Message: "temporary connection failure", Attempts: 3}},
+	}
+	view := usageFromCache(cache, "profile-a", "", now)
+	if view.Status != "fresh" || view.Error != "temporary connection failure" || view.Attempts != 3 {
+		t.Fatalf("unexpected cached usage view: %#v", view)
+	}
+	if got := compactUsageError(view); got != "temporary connection failure" {
+		t.Fatalf("compact error = %q", got)
+	}
+	if usageStatus(now.Add(-6*time.Minute), now) != "stale" {
+		t.Fatal("snapshot older than five minutes was not stale")
 	}
 }
 
