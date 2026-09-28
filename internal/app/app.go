@@ -27,6 +27,7 @@ import (
 	"github.com/SilkageNet/codex-switch/internal/secretstore"
 	appstate "github.com/SilkageNet/codex-switch/internal/state"
 	"github.com/SilkageNet/codex-switch/internal/switcher"
+	"github.com/SilkageNet/codex-switch/internal/usagecache"
 	"github.com/SilkageNet/codex-switch/internal/vault"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -72,7 +73,11 @@ type usageView struct {
 	TokenUsage *codexusage.TokenUsage `json:"tokenUsage,omitempty"`
 	Partial    []string               `json:"partial,omitempty"`
 	Error      string                 `json:"error,omitempty"`
+	ErrorAt    time.Time              `json:"errorAt,omitempty"`
+	Attempts   int                    `json:"attempts,omitempty"`
 }
+
+const usageFreshness = 5 * time.Minute
 
 func NewCommand(version string) *cobra.Command {
 	options := &Options{Version: version, Input: os.Stdin, Output: os.Stdout, Error: os.Stderr}
@@ -289,7 +294,7 @@ func newAccountListCommand(options *Options) *cobra.Command {
 			views := make([]accountView, 0, len(data.Profiles))
 			for _, profile := range data.Profiles {
 				view := toView(profile, profile.ID == activeProfileID)
-				view.Usage = usageFromCache(cache.Profiles, profile.ID, refreshErrors[profile.ID], time.Now())
+				view.Usage = usageFromCache(cache, profile.ID, refreshErrors[profile.ID], time.Now())
 				views = append(views, view)
 			}
 			if options.JSON {
@@ -300,7 +305,7 @@ func newAccountListCommand(options *Options) *cobra.Command {
 				return nil
 			}
 			writer := tabwriter.NewWriter(options.Output, 0, 4, 2, ' ', 0)
-			_, _ = fmt.Fprintln(writer, "\tALIAS\tIDENTITY\tPLAN\tLIMITS\tRESETS\tTOKENS\tUPDATED")
+			_, _ = fmt.Fprintln(writer, "\tALIAS\tIDENTITY\tPLAN\tLIMITS\tRESETS\tTOKENS\tUPDATED\tERROR")
 			for _, view := range views {
 				marker := " "
 				if view.Active {
@@ -311,10 +316,15 @@ func newAccountListCommand(options *Options) *cobra.Command {
 					identity = view.AccountID
 				}
 				plan, limits, resets, tokens, updated := summarizeUsage(view.Usage, time.Now())
-				_, _ = fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", marker, view.Alias, identity, plan, limits, resets, tokens, updated)
+				_, _ = fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", marker, view.Alias, identity, plan, limits, resets, tokens, updated, compactUsageError(view.Usage))
 			}
 			if err := writer.Flush(); err != nil {
 				return err
+			}
+			for _, view := range views {
+				if view.Usage != nil && view.Usage.Error != "" {
+					_, _ = fmt.Fprintf(options.Output, "Refresh error for %s: %s\n", view.Alias, view.Usage.Error)
+				}
 			}
 			if notice := observationNotice(observation); notice != "" {
 				_, _ = fmt.Fprintln(options.Output, notice)
@@ -411,7 +421,7 @@ func newAccountUsageCommand(options *Options) *cobra.Command {
 			views := make([]accountView, 0, len(profiles))
 			for _, profile := range profiles {
 				view := toView(profile, profile.ID == activeProfileID)
-				view.Usage = usageFromCache(cache.Profiles, profile.ID, refreshErrors[profile.ID], time.Now())
+				view.Usage = usageFromCache(cache, profile.ID, refreshErrors[profile.ID], time.Now())
 				if len(profiles) == 1 && view.Usage.Status == "unavailable" {
 					if view.Usage.Error != "" {
 						return errors.New(view.Usage.Error)
@@ -1096,10 +1106,17 @@ func formatView(view accountView) string {
 	return fmt.Sprintf("%s (%s)", view.Alias, identity)
 }
 
-func usageFromCache(cache map[string]codexusage.Snapshot, profileID, queryError string, now time.Time) *usageView {
-	snapshot, ok := cache[profileID]
+func usageFromCache(cache usagecache.Cache, profileID, queryError string, now time.Time) *usageView {
+	failure := cache.Failures[profileID]
+	if queryError == "" {
+		queryError = failure.Message
+	}
+	if queryError != "" && failure.AttemptedAt.IsZero() {
+		failure.AttemptedAt = now
+	}
+	snapshot, ok := cache.Profiles[profileID]
 	if !ok {
-		return &usageView{Status: "unavailable", Error: queryError}
+		return &usageView{Status: "unavailable", Error: queryError, ErrorAt: failure.AttemptedAt, Attempts: failure.Attempts}
 	}
 	return &usageView{
 		Status:     usageStatus(snapshot.FetchedAt, now),
@@ -1109,14 +1126,29 @@ func usageFromCache(cache map[string]codexusage.Snapshot, profileID, queryError 
 		TokenUsage: snapshot.TokenUsage,
 		Partial:    snapshot.Partial,
 		Error:      queryError,
+		ErrorAt:    failure.AttemptedAt,
+		Attempts:   failure.Attempts,
 	}
 }
 
 func usageStatus(fetchedAt, now time.Time) string {
-	if fetchedAt.IsZero() || now.Sub(fetchedAt) > time.Minute {
+	if fetchedAt.IsZero() || now.Sub(fetchedAt) > usageFreshness {
 		return "stale"
 	}
 	return "fresh"
+}
+
+func compactUsageError(usage *usageView) string {
+	if usage == nil || usage.Error == "" {
+		return "-"
+	}
+	value := strings.Join(strings.Fields(usage.Error), " ")
+	const maxRunes = 56
+	runes := []rune(value)
+	if len(runes) > maxRunes {
+		value = string(runes[:maxRunes-1]) + "…"
+	}
+	return value
 }
 
 func summarizeUsage(usage *usageView, now time.Time) (string, string, string, string, string) {
@@ -1236,7 +1268,14 @@ func formatUsage(view accountView, now time.Time) string {
 		output.WriteString(strings.Join(usage.Partial, ", "))
 	}
 	if usage.Error != "" {
-		output.WriteString("\nWarning: ")
+		output.WriteString("\nRefresh error")
+		if usage.Attempts > 0 {
+			fmt.Fprintf(&output, " after %d attempt(s)", usage.Attempts)
+		}
+		if !usage.ErrorAt.IsZero() {
+			fmt.Fprintf(&output, " at %s", formatLocalTime(usage.ErrorAt))
+		}
+		output.WriteString(": ")
 		output.WriteString(usage.Error)
 	}
 	return output.String()

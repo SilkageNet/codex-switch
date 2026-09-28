@@ -3,8 +3,10 @@ package accountusage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,6 +23,23 @@ type fakeRunner struct {
 	snapshot codexusage.Snapshot
 	auth     json.RawMessage
 	err      error
+}
+
+type retryRunner struct {
+	calls    int
+	failures int
+	snapshot codexusage.Snapshot
+	auth     json.RawMessage
+	inputs   []json.RawMessage
+}
+
+func (runner *retryRunner) Query(_ context.Context, auth json.RawMessage) (codexusage.Snapshot, json.RawMessage, error) {
+	runner.calls++
+	runner.inputs = append(runner.inputs, append(json.RawMessage(nil), auth...))
+	if runner.calls <= runner.failures {
+		return codexusage.Snapshot{}, runner.auth, errors.New("temporary connection failure")
+	}
+	return runner.snapshot, runner.auth, nil
 }
 
 func (runner fakeRunner) Query(context.Context, json.RawMessage) (codexusage.Snapshot, json.RawMessage, error) {
@@ -54,6 +73,67 @@ func TestRefreshCachesUsageAndAdoptsRotatedCredentials(t *testing.T) {
 	cache, err := service.Cached()
 	if err != nil || cache.Profiles[profile.ID].PlanType != "pro" {
 		t.Fatalf("usage was not cached: %#v, %v", cache, err)
+	}
+}
+
+func TestRefreshRetriesAndClearsPersistedFailure(t *testing.T) {
+	service, _, profile := testService(t, false)
+	runner := &retryRunner{
+		failures: 2,
+		snapshot: codexusage.Snapshot{FetchedAt: time.Now().UTC(), PlanType: "pro"},
+		auth:     authBytes("account-a", "refresh-new", "2026-08-20T01:00:00Z"),
+	}
+	service.Runner = runner
+	service.retryBaseDelay = time.Nanosecond
+	results, err := service.Refresh(context.Background(), []string{profile.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runner.calls != 3 || results[profile.ID].Attempts != 3 || results[profile.ID].Error != "" {
+		t.Fatalf("unexpected retry result: calls=%d result=%#v", runner.calls, results[profile.ID])
+	}
+	retriedWith, err := authschema.Parse(runner.inputs[1])
+	if err != nil || retriedWith.Tokens.RefreshToken != "refresh-new" {
+		t.Fatalf("retry did not use rotated credentials: %#v, %v", retriedWith.Tokens, err)
+	}
+	cache, err := service.Cached()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cache.Failures[profile.ID]; ok {
+		t.Fatalf("successful retry retained failure: %#v", cache.Failures[profile.ID])
+	}
+}
+
+func TestRefreshPersistsFailureDetails(t *testing.T) {
+	service, manager, profile := testService(t, false)
+	runner := &retryRunner{failures: 3, auth: authBytes("account-a", "refresh-new", "2026-08-20T01:00:00Z")}
+	service.Runner = runner
+	service.retryBaseDelay = time.Nanosecond
+	results, err := service.Refresh(context.Background(), []string{profile.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := results[profile.ID]
+	if result.Attempts != 3 || !strings.Contains(result.Error, "temporary connection failure") {
+		t.Fatalf("unexpected failure result: %#v", result)
+	}
+	cache, err := service.Cached()
+	if err != nil {
+		t.Fatal(err)
+	}
+	failure := cache.Failures[profile.ID]
+	if failure.Attempts != 3 || failure.AttemptedAt.IsZero() || failure.Message != result.Error {
+		t.Fatalf("failure was not persisted: %#v", failure)
+	}
+	data, err := manager.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, _ := data.Find(profile.ID)
+	document, _ := authschema.Parse(saved.Auth)
+	if document.Tokens.RefreshToken != "refresh-new" {
+		t.Fatal("rotated credentials from failed queries were not preserved")
 	}
 }
 

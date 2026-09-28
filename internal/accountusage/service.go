@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 	"time"
 
 	"github.com/SilkageNet/codex-switch/internal/atomicfile"
@@ -22,7 +21,11 @@ import (
 	"github.com/SilkageNet/codex-switch/internal/vault"
 )
 
-const queryTimeout = 20 * time.Second
+const (
+	queryTimeout          = 20 * time.Second
+	defaultQueryAttempts  = 3
+	defaultRetryBaseDelay = 250 * time.Millisecond
+)
 
 type QueryRunner interface {
 	Query(context.Context, json.RawMessage) (codexusage.Snapshot, json.RawMessage, error)
@@ -33,12 +36,16 @@ type Service struct {
 	Paths  appconfig.Paths
 	Vault  *vault.Manager
 	Runner QueryRunner
+
+	queryAttempts  int
+	retryBaseDelay time.Duration
 }
 
 type Result struct {
 	ProfileID string              `json:"profileId"`
 	Snapshot  codexusage.Snapshot `json:"snapshot,omitempty"`
 	Error     string              `json:"error,omitempty"`
+	Attempts  int                 `json:"attempts,omitempty"`
 }
 
 type queryResult struct {
@@ -46,6 +53,7 @@ type queryResult struct {
 	snapshot  codexusage.Snapshot
 	auth      json.RawMessage
 	err       error
+	attempts  int
 }
 
 func (service Service) Cached() (usagecache.Cache, error) {
@@ -79,29 +87,11 @@ func (service Service) Refresh(ctx context.Context, profileIDs []string) (map[st
 		}
 	}
 
-	queried := make(chan queryResult, len(selected))
-	semaphore := make(chan struct{}, 4)
-	var group sync.WaitGroup
+	queried := make([]queryResult, 0, len(selected))
 	for _, profile := range selected {
-		profile := profile
-		group.Add(1)
-		go func() {
-			defer group.Done()
-			select {
-			case semaphore <- struct{}{}:
-				defer func() { <-semaphore }()
-			case <-ctx.Done():
-				queried <- queryResult{profileID: profile.ID, err: ctx.Err()}
-				return
-			}
-			queryContext, cancel := context.WithTimeout(ctx, queryTimeout)
-			defer cancel()
-			snapshot, updatedAuth, queryErr := service.Runner.Query(queryContext, profile.Auth)
-			queried <- queryResult{profileID: profile.ID, snapshot: snapshot, auth: updatedAuth, err: queryErr}
-		}()
+		snapshot, updatedAuth, attempts, queryErr := service.queryWithRetry(ctx, profile.Auth)
+		queried = append(queried, queryResult{profileID: profile.ID, snapshot: snapshot, auth: updatedAuth, err: queryErr, attempts: attempts})
 	}
-	group.Wait()
-	close(queried)
 
 	results := make(map[string]Result, len(selected))
 	candidates := make(map[string]json.RawMessage, len(selected))
@@ -109,12 +99,14 @@ func (service Service) Refresh(ctx context.Context, profileIDs []string) (map[st
 	if err != nil {
 		return nil, err
 	}
-	for result := range queried {
-		entry := Result{ProfileID: result.profileID}
+	for _, result := range queried {
+		entry := Result{ProfileID: result.profileID, Attempts: result.attempts}
 		if result.err != nil {
 			entry.Error = result.err.Error()
 		} else {
 			entry.Snapshot = result.snapshot
+		}
+		if len(result.auth) > 0 {
 			candidates[result.profileID] = result.auth
 		}
 		results[result.profileID] = entry
@@ -159,7 +151,9 @@ func (service Service) Refresh(ctx context.Context, profileIDs []string) (map[st
 			results[profileID] = entry
 			continue
 		}
-		cache.Profiles[profileID] = results[profileID].Snapshot
+		if results[profileID].Error == "" {
+			cache.Profiles[profileID] = results[profileID].Snapshot
+		}
 		saved, parseErr := authschema.Parse(profile.Auth)
 		if parseErr != nil {
 			entry := results[profileID]
@@ -210,10 +204,71 @@ func (service Service) Refresh(ctx context.Context, profileIDs []string) (map[st
 			delete(cache.Profiles, profileID)
 		}
 	}
+	for profileID, result := range results {
+		if result.Error == "" {
+			delete(cache.Failures, profileID)
+			continue
+		}
+		cache.Failures[profileID] = usagecache.Failure{
+			AttemptedAt: time.Now().UTC(),
+			Message:     result.Error,
+			Attempts:    result.Attempts,
+		}
+	}
+	for profileID := range cache.Failures {
+		if !validProfiles[profileID] {
+			delete(cache.Failures, profileID)
+		}
+	}
 	if err := usagecache.Save(service.Paths.UsageCache, cache); err != nil {
 		return nil, err
 	}
 	return results, nil
+}
+
+func (service Service) queryWithRetry(ctx context.Context, auth json.RawMessage) (codexusage.Snapshot, json.RawMessage, int, error) {
+	attemptLimit := service.queryAttempts
+	if attemptLimit <= 0 {
+		attemptLimit = defaultQueryAttempts
+	}
+	baseDelay := service.retryBaseDelay
+	if baseDelay <= 0 {
+		baseDelay = defaultRetryBaseDelay
+	}
+	currentAuth := append(json.RawMessage(nil), auth...)
+	var latestAuth json.RawMessage
+	var lastErr error
+	for attempt := 1; attempt <= attemptLimit; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return codexusage.Snapshot{}, nil, attempt - 1, err
+		}
+		queryContext, cancel := context.WithTimeout(ctx, queryTimeout)
+		snapshot, updatedAuth, err := service.Runner.Query(queryContext, currentAuth)
+		cancel()
+		if len(updatedAuth) > 0 {
+			latestAuth = append(latestAuth[:0], updatedAuth...)
+			currentAuth = append(currentAuth[:0], updatedAuth...)
+		}
+		if err == nil {
+			if len(updatedAuth) == 0 {
+				updatedAuth = latestAuth
+			}
+			return snapshot, updatedAuth, attempt, nil
+		}
+		lastErr = err
+		if attempt == attemptLimit {
+			break
+		}
+		delay := baseDelay << (attempt - 1)
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return codexusage.Snapshot{}, latestAuth, attempt, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return codexusage.Snapshot{}, latestAuth, attemptLimit, fmt.Errorf("query failed after %d attempts: %w", attemptLimit, lastErr)
 }
 
 func (service Service) reconcileActive(profile *vault.Profile, candidate authschema.Document, state *appstate.State) (bool, error) {

@@ -45,7 +45,9 @@ focuses on:
   never contains authentication documents.
 - A token refreshed during an isolated query is accepted only after account,
   workspace, and refresh-generation checks. Active-file updates use a
-  compare-before-replace check under the shared operation lock.
+  compare-before-replace check under the shared operation lock. A validated
+  newer generation is preserved even when the accompanying usage request fails,
+  so retries do not fall back to a rotated token.
 - Active-account detection uses the live account and workspace identifiers;
   stale recorded state, aliases, and email addresses cannot redirect live
   credentials into another saved profile. Synchronization rechecks the live

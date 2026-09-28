@@ -87,7 +87,7 @@ Server without making that account active:
 # Query the active managed account now.
 codex-switch account usage
 
-# Query one saved account, or all accounts concurrently.
+# Query one saved account, or all accounts in a reliable sequence.
 codex-switch account usage work
 codex-switch account usage --all
 
@@ -100,9 +100,17 @@ codex-switch account usage work --cached
 ```
 
 Normal `account list` calls refresh only missing snapshots or snapshots older
-than 60 seconds. Each query runs in an isolated temporary `CODEX_HOME`; it does
+than five minutes. Explicit `--refresh` queries every account. Failed queries
+are retried up to three times with backoff, and multi-account refreshes run in a
+reliable sequence instead of starting several Codex App Servers at once. Each
+query runs in an isolated temporary `CODEX_HOME`; it does
 not switch `$CODEX_HOME/auth.json`, sessions, plugins, or UI state. The cache
 contains usage numbers and public account metadata only, never tokens.
+
+The compact list preserves the last successful values when a refresh fails,
+shows an error summary in the `ERROR` column, and prints the complete redacted
+error below the table. The last failure is retained in the local usage cache so
+`--cached` remains diagnostic after the failing process exits.
 
 The compact list shows the next automatic reset for each quota window. Its
 `RESETS` column is separate: it reports earned manual rate-limit resets and the

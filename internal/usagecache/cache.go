@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/SilkageNet/codex-switch/internal/atomicfile"
 	"github.com/SilkageNet/codex-switch/internal/codexusage"
@@ -13,12 +14,19 @@ import (
 type Cache struct {
 	Version  int                            `json:"version"`
 	Profiles map[string]codexusage.Snapshot `json:"profiles"`
+	Failures map[string]Failure             `json:"failures,omitempty"`
+}
+
+type Failure struct {
+	AttemptedAt time.Time `json:"attemptedAt"`
+	Message     string    `json:"message"`
+	Attempts    int       `json:"attempts,omitempty"`
 }
 
 func Load(path string) (Cache, error) {
 	data, err := atomicfile.ReadLimited(path, 16<<20)
 	if errors.Is(err, os.ErrNotExist) {
-		return Cache{Version: 1, Profiles: map[string]codexusage.Snapshot{}}, nil
+		return Cache{Version: 1, Profiles: map[string]codexusage.Snapshot{}, Failures: map[string]Failure{}}, nil
 	}
 	if err != nil {
 		return Cache{}, err
@@ -33,6 +41,9 @@ func Load(path string) (Cache, error) {
 	if cache.Profiles == nil {
 		cache.Profiles = map[string]codexusage.Snapshot{}
 	}
+	if cache.Failures == nil {
+		cache.Failures = map[string]Failure{}
+	}
 	return cache, nil
 }
 
@@ -40,6 +51,9 @@ func Save(path string, cache Cache) error {
 	cache.Version = 1
 	if cache.Profiles == nil {
 		cache.Profiles = map[string]codexusage.Snapshot{}
+	}
+	if cache.Failures == nil {
+		cache.Failures = map[string]Failure{}
 	}
 	data, err := json.MarshalIndent(cache, "", "  ")
 	if err != nil {
