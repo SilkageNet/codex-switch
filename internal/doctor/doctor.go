@@ -103,7 +103,7 @@ func Run(home codexhome.Home, paths appconfig.Paths, manager *vault.Manager, cod
 		if version, err := runner.Version(); err != nil {
 			add("codex_cli", "error", err.Error())
 		} else {
-			add("codex_cli", "ok", version)
+			add("codex_cli", "ok", fmt.Sprintf("%s (%s)", version, codexBinary))
 		}
 	}
 
