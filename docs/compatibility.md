@@ -69,6 +69,12 @@ Usage querying initializes `codex app-server` and calls:
 - `account/rateLimits/read`
 - `account/usage/read`
 
+`account wake` additionally requires the installed CLI's non-interactive
+`codex exec` mode and its `--ephemeral`, `--ignore-user-config`,
+`--ignore-rules`, and read-only sandbox options. The wake turn uses the CLI's
+default ChatGPT-plan Codex model so it affects the ordinary Codex allowance
+rather than selecting a separately metered model family.
+
 When returned by `account/rateLimits/read`, the client also preserves
 `rateLimitResetCredits.availableCount` and its optional grant/expiration detail
 rows. Older services that omit this optional object remain supported.

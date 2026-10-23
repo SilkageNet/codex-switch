@@ -25,7 +25,8 @@
   drift, safely synchronizes known profiles, prepares a journal, performs
   compare-before-replace, and records the selected profile.
 - `codexusage` runs the official Codex App Server in an isolated temporary
-  `CODEX_HOME` and reads the stable account, rate-limit, and token-usage methods.
+  `CODEX_HOME`, optionally sends one minimal ephemeral request, and reads the
+  stable account, rate-limit, and token-usage methods.
 - `accountusage` queries up to four profiles concurrently, reconciles credential
   refresh generations, and coordinates with switching through the same lock.
 - `usagecache` stores credential-free successful snapshots separately from the
@@ -96,6 +97,26 @@ projection from a concurrent Codex write. Transient failures are retried with
 backoff using the newest validated credential generation returned by the prior
 attempt. Multi-account refreshes are intentionally sequential so independent
 App Server processes do not compete for startup or authentication resources.
+
+## Isolated quota-window wake
+
+```text
+acquire shared operation lock
+  -> decrypt and validate exactly one selected profile
+  -> create a temporary CODEX_HOME and an unrelated empty workspace
+  -> run one non-interactive, ephemeral Codex turn with a fixed short prompt
+  -> disable user config and rules; use minimal reasoning and a read-only sandbox
+  -> do not retry the turn
+  -> query the account usage through App Server in the same temporary home
+  -> reconcile any rotated credential generation and cache the new snapshot
+  -> delete both temporary directories
+```
+
+The wake path uses the same identity, generation, and active-file reconciliation
+checks as a normal usage query. It does not project the target profile into the
+shared `CODEX_HOME` and does not persist a Codex session. A successful turn is
+real quota usage; the subsequent snapshot is the evidence available for whether
+the service started or advanced a quota window.
 
 ## Data locations
 

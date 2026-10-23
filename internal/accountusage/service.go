@@ -32,12 +32,14 @@ type QueryRunner interface {
 }
 
 type Service struct {
-	Home   codexhome.Home
-	Paths  appconfig.Paths
-	Vault  *vault.Manager
-	Runner QueryRunner
+	Home          codexhome.Home
+	Paths         appconfig.Paths
+	Vault         *vault.Manager
+	Runner        QueryRunner
+	QueryTimeout  time.Duration
+	QueryAttempts int
+	RecordUse     bool
 
-	queryAttempts  int
 	retryBaseDelay time.Duration
 }
 
@@ -153,6 +155,10 @@ func (service Service) Refresh(ctx context.Context, profileIDs []string) (map[st
 		}
 		if results[profileID].Error == "" {
 			cache.Profiles[profileID] = results[profileID].Snapshot
+			if service.RecordUse {
+				profile.LastUsedAt = time.Now().UTC()
+				vaultChanged = true
+			}
 		}
 		saved, parseErr := authschema.Parse(profile.Auth)
 		if parseErr != nil {
@@ -227,9 +233,13 @@ func (service Service) Refresh(ctx context.Context, profileIDs []string) (map[st
 }
 
 func (service Service) queryWithRetry(ctx context.Context, auth json.RawMessage) (codexusage.Snapshot, json.RawMessage, int, error) {
-	attemptLimit := service.queryAttempts
+	attemptLimit := service.QueryAttempts
 	if attemptLimit <= 0 {
 		attemptLimit = defaultQueryAttempts
+	}
+	timeout := service.QueryTimeout
+	if timeout <= 0 {
+		timeout = queryTimeout
 	}
 	baseDelay := service.retryBaseDelay
 	if baseDelay <= 0 {
@@ -242,7 +252,7 @@ func (service Service) queryWithRetry(ctx context.Context, auth json.RawMessage)
 		if err := ctx.Err(); err != nil {
 			return codexusage.Snapshot{}, nil, attempt - 1, err
 		}
-		queryContext, cancel := context.WithTimeout(ctx, queryTimeout)
+		queryContext, cancel := context.WithTimeout(ctx, timeout)
 		snapshot, updatedAuth, err := service.Runner.Query(queryContext, currentAuth)
 		cancel()
 		if len(updatedAuth) > 0 {

@@ -70,6 +70,7 @@ codex-switch account add work --device-auth
 # Inspect and switch. Close Codex before switching, then restart it.
 codex-switch account list
 codex-switch account usage work
+codex-switch account wake work
 codex-switch use work
 codex-switch current
 
@@ -122,6 +123,23 @@ shows exact local reset times plus each returned earned-reset grant and expiry.
 The authoritative earned-reset count can be present even when the service omits
 or caps its detail rows.
 
+To start an idle quota window without switching accounts, explicitly send one
+minimal request:
+
+```bash
+codex-switch account wake work
+# Equivalent, more descriptive spelling:
+codex-switch account start-window work
+```
+
+The command always targets exactly one saved alias and intentionally consumes a
+small amount of that account's Codex allowance. It does not retry the model
+request. Codex runs with a fixed short prompt, minimal reasoning, no persisted
+session, an empty temporary workspace, a read-only sandbox, and no user config,
+rules, plugins, or MCP servers. After the request completes, `codex-switch`
+refreshes the usage snapshot so the returned reset time can be inspected. The
+service, not `codex-switch`, remains authoritative about when a window starts.
+
 ## Commands
 
 ```text
@@ -138,6 +156,7 @@ codex-switch account add <alias>
 codex-switch account import-current <alias>
 codex-switch account list [--refresh|--cached]
 codex-switch account usage [alias] [--all] [--cached]
+codex-switch account wake <alias>
 codex-switch account show <alias>
 codex-switch account rename <old> <new>
 codex-switch account reauth <alias>
@@ -185,6 +204,11 @@ An account-usage query may persist an officially refreshed credential generation
 back to the encrypted vault. If the queried profile is active, the same
 generation is safely reconciled into `$CODEX_HOME/auth.json`; no account selection
 or Codex-owned state changes.
+
+`account wake` has the same credential-isolation behavior, but additionally
+creates one ephemeral Codex turn for the selected saved profile and records its
+`lastUsedAt` timestamp. It never replaces the selected live account or writes a
+session into the shared `CODEX_HOME`.
 
 Initialization may make a one-time, backed-up change to
 `$CODEX_HOME/config.toml` to set `cli_auth_credentials_store = "file"`.
