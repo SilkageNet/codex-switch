@@ -89,6 +89,59 @@ func TestRunnerReturnsBinaryDiscoveryError(t *testing.T) {
 	}
 }
 
+func TestRunnerWakeSendsOneMinimalIsolatedRequestBeforeQuery(t *testing.T) {
+	var invocations [][]string
+	runner := helperRunner(t, false)
+	runner.Wake = true
+	runner.command = func(ctx context.Context, binary string, args ...string) *exec.Cmd {
+		invocations = append(invocations, append([]string(nil), args...))
+		command := exec.CommandContext(ctx, binary, "-test.run=TestCodexUsageHelperProcess", "--")
+		command.Env = append(os.Environ(), "CODEX_USAGE_HELPER=1")
+		return command
+	}
+	snapshot, updated, err := runner.Query(context.Background(), testAuth("account-a", "refresh-old", "2026-08-20T00:00:00Z"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.PlanType != "pro" || !strings.Contains(string(updated), "refresh-new") {
+		t.Fatalf("unexpected wake result: snapshot=%#v auth=%s", snapshot, updated)
+	}
+	if len(invocations) != 2 {
+		t.Fatalf("got %d Codex invocations, want wake plus usage query", len(invocations))
+	}
+	wake := strings.Join(invocations[0], " ")
+	for _, expected := range []string{
+		"exec",
+		"--ephemeral",
+		"--ignore-user-config",
+		"--ignore-rules",
+		"--skip-git-repo-check",
+		"--sandbox read-only",
+		`approval_policy="never"`,
+		`model_reasoning_effort="minimal"`,
+		"Reply with exactly OK. Do not use tools.",
+	} {
+		if !strings.Contains(wake, expected) {
+			t.Fatalf("wake invocation %q does not contain %q", wake, expected)
+		}
+	}
+	if len(invocations[1]) != 1 || invocations[1][0] != "app-server" {
+		t.Fatalf("second invocation = %#v, want app-server", invocations[1])
+	}
+}
+
+func TestRunnerWakeReportsCompletedRequestWhenUsageVerificationFails(t *testing.T) {
+	runner := helperRunnerMode(t, false, true)
+	runner.Wake = true
+	_, updated, err := runner.Query(context.Background(), testAuth("account-a", "refresh-old", "2026-08-20T00:00:00Z"))
+	if err == nil || !strings.Contains(err.Error(), "minimal Codex request completed but usage verification failed") {
+		t.Fatalf("unexpected wake verification error: %v", err)
+	}
+	if !strings.Contains(string(updated), "refresh-new") {
+		t.Fatalf("rotated credentials were lost after wake verification failure: %s", updated)
+	}
+}
+
 func helperRunner(t *testing.T, partial bool) Runner {
 	return helperRunnerMode(t, partial, false)
 }

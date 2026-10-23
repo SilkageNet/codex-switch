@@ -40,6 +40,10 @@ focuses on:
 - JSON output is intentionally based on dedicated public view types.
 - Usage queries create per-profile temporary homes with mode `0700` and
   credential files with mode `0600`, then remove them after the App Server exits.
+- Quota-window wake requests use the same temporary credential home plus a
+  separate empty workspace. They run one fixed prompt with an ephemeral session,
+  minimal reasoning, ignored user config and rules, a read-only sandbox, and no
+  automatic retry. Child stdout and diagnostics are never exposed or cached.
 - The usage cache contains rate limits, earned-reset counts and metadata,
   aggregate token statistics, timestamps, and public account metadata only. It
   never contains authentication documents.

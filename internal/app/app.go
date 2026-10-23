@@ -77,6 +77,11 @@ type usageView struct {
 	Attempts   int                    `json:"attempts,omitempty"`
 }
 
+type wakeView struct {
+	Account     accountView `json:"account"`
+	RequestSent bool        `json:"requestSent"`
+}
+
 const usageFreshness = 5 * time.Minute
 
 func NewCommand(version string) *cobra.Command {
@@ -155,6 +160,7 @@ func newAccountCommand(options *Options) *cobra.Command {
 		newAccountAddCommand(options, false),
 		newAccountListCommand(options),
 		newAccountUsageCommand(options),
+		newAccountWakeCommand(options),
 		newAccountShowCommand(options),
 		newAccountRenameCommand(options),
 		newAccountRemoveCommand(options),
@@ -448,6 +454,62 @@ func newAccountUsageCommand(options *Options) *cobra.Command {
 	command.Flags().BoolVar(&all, "all", false, "show usage for every saved account")
 	command.Flags().BoolVar(&cached, "cached", false, "show cached usage without contacting Codex services")
 	return command
+}
+
+func newAccountWakeCommand(options *Options) *cobra.Command {
+	return &cobra.Command{
+		Use:     "wake <alias>",
+		Aliases: []string{"start-window"},
+		Short:   "Send one minimal Codex request to start an idle usage window",
+		Args:    cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			runtime, err := options.loadRuntime(false)
+			if err != nil {
+				return err
+			}
+			data, err := runtime.manager.Load()
+			if err != nil {
+				return err
+			}
+			profile, err := data.Find(args[0])
+			if err != nil {
+				return err
+			}
+			results, err := runtime.wakeService(options.Version).Refresh(context.Background(), []string{profile.ID})
+			if err != nil {
+				return err
+			}
+			result := results[profile.ID]
+			if result.Error != "" {
+				return fmt.Errorf("wake request for %q failed: %s", profile.Alias, result.Error)
+			}
+			data, err = runtime.manager.Load()
+			if err != nil {
+				return err
+			}
+			profile, err = data.Find(profile.ID)
+			if err != nil {
+				return err
+			}
+			observation, err := runtime.switcher().Observe()
+			if err != nil {
+				return err
+			}
+			cache, err := runtime.usageService(options.Version).Cached()
+			if err != nil {
+				return err
+			}
+			view := toView(*profile, observation.Managed && observation.ProfileID == profile.ID)
+			view.Usage = usageFromCache(cache, profile.ID, "", time.Now())
+			wake := wakeView{Account: view, RequestSent: true}
+			if options.JSON {
+				return options.render(wake, "")
+			}
+			_, _ = fmt.Fprintf(options.Output, "Sent one minimal Codex request for %q without changing the active account.\n", profile.Alias)
+			_, _ = fmt.Fprintln(options.Output, formatUsage(view, time.Now()))
+			return nil
+		},
+	}
 }
 
 func newAccountShowCommand(options *Options) *cobra.Command {
@@ -980,6 +1042,23 @@ func (runtime runtimeState) usageService(version string) accountusage.Service {
 			Binary:        runtime.bin,
 			BinaryError:   runtime.binErr,
 			ClientVersion: version,
+		},
+	}
+}
+
+func (runtime runtimeState) wakeService(version string) accountusage.Service {
+	return accountusage.Service{
+		Home:          runtime.home,
+		Paths:         runtime.paths,
+		Vault:         runtime.manager,
+		QueryTimeout:  90 * time.Second,
+		QueryAttempts: 1,
+		RecordUse:     true,
+		Runner: codexusage.Runner{
+			Binary:        runtime.bin,
+			BinaryError:   runtime.binErr,
+			ClientVersion: version,
+			Wake:          true,
 		},
 	}
 }

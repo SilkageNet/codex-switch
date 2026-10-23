@@ -25,6 +25,7 @@ type Runner struct {
 	Binary        string
 	BinaryError   error
 	ClientVersion string
+	Wake          bool
 	command       func(context.Context, string, ...string) *exec.Cmd
 }
 
@@ -70,7 +71,30 @@ func (runner Runner) Query(ctx context.Context, auth json.RawMessage) (Snapshot,
 	if err := atomicfile.Write(filepath.Join(temporaryHome, "auth.json"), append(append([]byte(nil), document.Raw...), '\n'), 0o600); err != nil {
 		return Snapshot{}, nil, err
 	}
+	if runner.Wake {
+		if err := runner.runWake(ctx, temporaryHome); err != nil {
+			updated, updateErr := readUpdatedAuth(temporaryHome, document)
+			if updateErr != nil {
+				return Snapshot{}, nil, errors.Join(err, updateErr)
+			}
+			return Snapshot{}, updated, err
+		}
+	}
+	snapshot, queryErr := runner.queryHome(ctx, temporaryHome)
+	updated, updateErr := readUpdatedAuth(temporaryHome, document)
+	if updateErr != nil {
+		return Snapshot{}, nil, updateErr
+	}
+	if queryErr != nil {
+		if runner.Wake {
+			queryErr = fmt.Errorf("minimal Codex request completed but usage verification failed: %w", queryErr)
+		}
+		return Snapshot{}, updated, queryErr
+	}
+	return snapshot, updated, nil
+}
 
+func (runner Runner) queryHome(ctx context.Context, temporaryHome string) (Snapshot, error) {
 	commandFactory := runner.command
 	if commandFactory == nil {
 		commandFactory = exec.CommandContext
@@ -83,16 +107,16 @@ func (runner Runner) Query(ctx context.Context, auth json.RawMessage) (Snapshot,
 	command.Env = withEnvironment(environment, "CODEX_HOME", temporaryHome)
 	stdin, err := command.StdinPipe()
 	if err != nil {
-		return Snapshot{}, nil, err
+		return Snapshot{}, err
 	}
 	stdout, err := command.StdoutPipe()
 	if err != nil {
-		return Snapshot{}, nil, err
+		return Snapshot{}, err
 	}
 	var stderr limitedBuffer
 	command.Stderr = &stderr
 	if err := command.Start(); err != nil {
-		return Snapshot{}, nil, fmt.Errorf("start Codex app server: %w", err)
+		return Snapshot{}, fmt.Errorf("start Codex app server: %w", err)
 	}
 	waited := false
 	defer func() {
@@ -113,70 +137,59 @@ func (runner Runner) Query(ctx context.Context, auth json.RawMessage) (Snapshot,
 	if err := sendRequest(encoder, 0, "initialize", map[string]any{
 		"clientInfo": map[string]string{"name": "codex_switch", "title": "codex-switch", "version": version},
 	}); err != nil {
-		return Snapshot{}, nil, err
+		return Snapshot{}, err
 	}
 	initialize, err := readResponse(scanner, 0)
 	if err != nil {
-		return Snapshot{}, nil, protocolError("initialize", err, stderr.String())
+		return Snapshot{}, protocolError("initialize", err, stderr.String())
 	}
 	if initialize.Error != nil {
-		return Snapshot{}, nil, responseError("initialize", initialize.Error)
+		return Snapshot{}, responseError("initialize", initialize.Error)
 	}
 	if err := encoder.Encode(rpcRequest{Method: "initialized", Params: map[string]any{}}); err != nil {
-		return Snapshot{}, nil, fmt.Errorf("send initialized notification: %w", err)
+		return Snapshot{}, fmt.Errorf("send initialized notification: %w", err)
 	}
 	if err := sendRequest(encoder, 1, "account/read", map[string]bool{"refreshToken": false}); err != nil {
-		return Snapshot{}, nil, err
+		return Snapshot{}, err
 	}
 	accountResponse, err := readResponse(scanner, 1)
 	if err != nil {
-		return Snapshot{}, nil, protocolError("read account", err, stderr.String())
+		return Snapshot{}, protocolError("read account", err, stderr.String())
 	}
 	if accountResponse.Error != nil {
-		return Snapshot{}, nil, responseError("account/read", accountResponse.Error)
+		return Snapshot{}, responseError("account/read", accountResponse.Error)
 	}
 	var account AccountResponse
 	if err := json.Unmarshal(accountResponse.Result, &account); err != nil {
-		return Snapshot{}, nil, fmt.Errorf("decode account/read response: %w", err)
+		return Snapshot{}, fmt.Errorf("decode account/read response: %w", err)
 	}
 	if account.Account == nil || account.Account.Type != "chatgpt" {
-		return Snapshot{}, nil, errors.New("saved profile is not recognized as a ChatGPT account by Codex")
+		return Snapshot{}, errors.New("saved profile is not recognized as a ChatGPT account by Codex")
 	}
 
 	if err := sendRequest(encoder, 2, "account/rateLimits/read", nil); err != nil {
-		return Snapshot{}, nil, err
+		return Snapshot{}, err
 	}
 	rateLimitsResponse, err := readResponse(scanner, 2)
 	if err != nil {
-		return Snapshot{}, nil, protocolError("read account rate limits", err, stderr.String())
+		return Snapshot{}, protocolError("read account rate limits", err, stderr.String())
 	}
 	if err := sendRequest(encoder, 3, "account/usage/read", nil); err != nil {
-		return Snapshot{}, nil, err
+		return Snapshot{}, err
 	}
 	tokenUsageResponse, err := readResponse(scanner, 3)
 	if err != nil {
-		return Snapshot{}, nil, protocolError("read account token usage", err, stderr.String())
+		return Snapshot{}, protocolError("read account token usage", err, stderr.String())
 	}
 	_ = stdin.Close()
 	if err := command.Wait(); err != nil {
 		waited = true
 		if ctx.Err() != nil {
-			return Snapshot{}, nil, fmt.Errorf("query account usage: %w", ctx.Err())
+			return Snapshot{}, fmt.Errorf("query account usage: %w", ctx.Err())
 		}
-		return Snapshot{}, nil, protocolError("Codex app server exited", err, stderr.String())
+		return Snapshot{}, protocolError("Codex app server exited", err, stderr.String())
 	}
 	waited = true
-	updated, err := atomicfile.ReadLimited(filepath.Join(temporaryHome, "auth.json"), 2<<20)
-	if err != nil {
-		return Snapshot{}, nil, fmt.Errorf("read refreshed account credentials: %w", err)
-	}
-	updatedDocument, err := authschema.Parse(updated)
-	if err != nil {
-		return Snapshot{}, nil, fmt.Errorf("validate refreshed account credentials: %w", err)
-	}
-	if updatedDocument.Tokens.AccountID != document.Tokens.AccountID {
-		return Snapshot{}, nil, errors.New("codex returned credentials for a different account")
-	}
 
 	snapshot := Snapshot{FetchedAt: time.Now().UTC(), PlanType: account.Account.PlanType}
 	if rateLimitsResponse.Error != nil {
@@ -184,7 +197,7 @@ func (runner Runner) Query(ctx context.Context, auth json.RawMessage) (Snapshot,
 	} else {
 		var value RateLimits
 		if err := json.Unmarshal(rateLimitsResponse.Result, &value); err != nil {
-			return Snapshot{}, nil, fmt.Errorf("decode account/rateLimits/read response: %w", err)
+			return Snapshot{}, fmt.Errorf("decode account/rateLimits/read response: %w", err)
 		}
 		snapshot.RateLimits = &value
 	}
@@ -193,17 +206,79 @@ func (runner Runner) Query(ctx context.Context, auth json.RawMessage) (Snapshot,
 	} else {
 		var value TokenUsage
 		if err := json.Unmarshal(tokenUsageResponse.Result, &value); err != nil {
-			return Snapshot{}, nil, fmt.Errorf("decode account/usage/read response: %w", err)
+			return Snapshot{}, fmt.Errorf("decode account/usage/read response: %w", err)
 		}
 		snapshot.TokenUsage = &value
 	}
 	if snapshot.RateLimits == nil && snapshot.TokenUsage == nil {
-		return Snapshot{}, updatedDocument.Raw, fmt.Errorf("account usage requests failed: %w", errors.Join(
+		return Snapshot{}, fmt.Errorf("account usage requests failed: %w", errors.Join(
 			responseError("account/rateLimits/read", rateLimitsResponse.Error),
 			responseError("account/usage/read", tokenUsageResponse.Error),
 		))
 	}
-	return snapshot, updatedDocument.Raw, nil
+	return snapshot, nil
+}
+
+func (runner Runner) runWake(ctx context.Context, temporaryHome string) error {
+	workspace, err := os.MkdirTemp("", "codex-switch-wake-*")
+	if err != nil {
+		return fmt.Errorf("create temporary wake workspace: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(workspace) }()
+	if err := os.Chmod(workspace, 0o700); err != nil {
+		return fmt.Errorf("protect temporary wake workspace: %w", err)
+	}
+	commandFactory := runner.command
+	if commandFactory == nil {
+		commandFactory = exec.CommandContext
+	}
+	command := commandFactory(ctx, runner.Binary,
+		"exec",
+		"--ephemeral",
+		"--ignore-user-config",
+		"--ignore-rules",
+		"--skip-git-repo-check",
+		"--sandbox", "read-only",
+		"--color", "never",
+		"-c", `approval_policy="never"`,
+		"-c", `model_reasoning_effort="minimal"`,
+		"--cd", workspace,
+		"Reply with exactly OK. Do not use tools.",
+	)
+	environment := command.Env
+	if environment == nil {
+		environment = os.Environ()
+	}
+	command.Env = withEnvironment(environment, "CODEX_HOME", temporaryHome)
+	var stdout limitedBuffer
+	var stderr limitedBuffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	if err := command.Run(); err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("send minimal Codex request: %w", ctx.Err())
+		}
+		if strings.TrimSpace(stderr.String()) != "" {
+			return fmt.Errorf("minimal Codex request failed: %w (Codex diagnostics redacted)", err)
+		}
+		return fmt.Errorf("minimal Codex request failed: %w", err)
+	}
+	return nil
+}
+
+func readUpdatedAuth(temporaryHome string, original authschema.Document) (json.RawMessage, error) {
+	updated, err := atomicfile.ReadLimited(filepath.Join(temporaryHome, "auth.json"), 2<<20)
+	if err != nil {
+		return nil, fmt.Errorf("read refreshed account credentials: %w", err)
+	}
+	updatedDocument, err := authschema.Parse(updated)
+	if err != nil {
+		return nil, fmt.Errorf("validate refreshed account credentials: %w", err)
+	}
+	if updatedDocument.Tokens.AccountID != original.Tokens.AccountID {
+		return nil, errors.New("codex returned credentials for a different account")
+	}
+	return updatedDocument.Raw, nil
 }
 
 func sendRequest(encoder *json.Encoder, id int, method string, params any) error {

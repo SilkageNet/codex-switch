@@ -48,6 +48,7 @@ func (runner fakeRunner) Query(context.Context, json.RawMessage) (codexusage.Sna
 
 func TestRefreshCachesUsageAndAdoptsRotatedCredentials(t *testing.T) {
 	service, manager, profile := testService(t, false)
+	service.RecordUse = true
 	updated := authBytes("account-a", "refresh-new", "2026-08-20T01:00:00Z")
 	lifetime := int64(1234)
 	service.Runner = fakeRunner{
@@ -70,9 +71,26 @@ func TestRefreshCachesUsageAndAdoptsRotatedCredentials(t *testing.T) {
 	if document.Tokens.RefreshToken != "refresh-new" {
 		t.Fatal("rotated credential was not saved")
 	}
+	if saved.LastUsedAt.IsZero() || !saved.LastUsedAt.After(profile.LastUsedAt) {
+		t.Fatalf("successful wake did not record account use: %#v", saved.LastUsedAt)
+	}
 	cache, err := service.Cached()
 	if err != nil || cache.Profiles[profile.ID].PlanType != "pro" {
 		t.Fatalf("usage was not cached: %#v, %v", cache, err)
+	}
+}
+
+func TestRefreshCanDisableRetriesForOneShotRequests(t *testing.T) {
+	service, _, profile := testService(t, false)
+	runner := &retryRunner{failures: 3, auth: authBytes("account-a", "refresh-new", "2026-08-20T01:00:00Z")}
+	service.Runner = runner
+	service.QueryAttempts = 1
+	results, err := service.Refresh(context.Background(), []string{profile.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runner.calls != 1 || results[profile.ID].Attempts != 1 {
+		t.Fatalf("one-shot refresh retried: calls=%d result=%#v", runner.calls, results[profile.ID])
 	}
 }
 
