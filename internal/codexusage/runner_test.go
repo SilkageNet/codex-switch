@@ -117,8 +117,9 @@ func TestRunnerWakeSendsOneMinimalIsolatedRequestBeforeQuery(t *testing.T) {
 		"--ignore-rules",
 		"--skip-git-repo-check",
 		"--sandbox read-only",
+		`cli_auth_credentials_store="file"`,
 		`approval_policy="never"`,
-		`model_reasoning_effort="minimal"`,
+		`model_reasoning_effort="low"`,
 		"Reply with exactly OK. Do not use tools.",
 	} {
 		if !strings.Contains(wake, expected) {
@@ -127,6 +128,34 @@ func TestRunnerWakeSendsOneMinimalIsolatedRequestBeforeQuery(t *testing.T) {
 	}
 	if len(invocations[1]) != 1 || invocations[1][0] != "app-server" {
 		t.Fatalf("second invocation = %#v, want app-server", invocations[1])
+	}
+}
+
+func TestWakeDiagnosticClassifiesWithoutExposingChildOutput(t *testing.T) {
+	tests := []struct {
+		name     string
+		stderr   string
+		expected string
+	}{
+		{name: "empty", stderr: "", expected: ""},
+		{name: "auth", stderr: "private@example.com: 401 Unauthorized: Missing bearer or basic authentication in header", expected: "did not accept this account's saved credentials"},
+		{name: "rate limit", stderr: "secret request id: 429 Too Many Requests", expected: "rate limited or out of quota"},
+		{name: "model", stderr: "secret model value: model_not_found", expected: "default model is unavailable"},
+		{name: "reasoning effort", stderr: "Unsupported value: 'minimal' is not supported for reasoning.effort", expected: "reasoning effort is not supported"},
+		{name: "option", stderr: "unexpected argument '--future-option' found", expected: "rejected the wake command options"},
+		{name: "network", stderr: "private proxy: failed to connect to host", expected: "check the network and retry"},
+		{name: "unknown", stderr: "sensitive diagnostic", expected: "unrecognized diagnostic"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := wakeDiagnostic(test.stderr)
+			if !strings.Contains(result, test.expected) {
+				t.Fatalf("wakeDiagnostic() = %q, want text containing %q", result, test.expected)
+			}
+			if result != "" && strings.Contains(result, test.stderr) {
+				t.Fatalf("wakeDiagnostic() leaked child output: %q", result)
+			}
+		})
 	}
 }
 

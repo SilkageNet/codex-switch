@@ -73,7 +73,9 @@ Usage querying initializes `codex app-server` and calls:
 `codex exec` mode and its `--ephemeral`, `--ignore-user-config`,
 `--ignore-rules`, and read-only sandbox options. The wake turn uses the CLI's
 default ChatGPT-plan Codex model so it affects the ordinary Codex allowance
-rather than selecting a separately metered model family.
+rather than selecting a separately metered model family. Because user config is
+ignored, the command explicitly overrides `cli_auth_credentials_store` to
+`file` so the selected profile is read from the isolated temporary home.
 
 When returned by `account/rateLimits/read`, the client also preserves
 `rateLimitResetCredits.availableCount` and its optional grant/expiration detail
