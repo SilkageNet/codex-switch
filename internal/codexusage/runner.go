@@ -240,8 +240,9 @@ func (runner Runner) runWake(ctx context.Context, temporaryHome string) error {
 		"--skip-git-repo-check",
 		"--sandbox", "read-only",
 		"--color", "never",
+		"-c", `cli_auth_credentials_store="file"`,
 		"-c", `approval_policy="never"`,
-		"-c", `model_reasoning_effort="minimal"`,
+		"-c", `model_reasoning_effort="low"`,
 		"--cd", workspace,
 		"Reply with exactly OK. Do not use tools.",
 	)
@@ -258,12 +259,53 @@ func (runner Runner) runWake(ctx context.Context, temporaryHome string) error {
 		if ctx.Err() != nil {
 			return fmt.Errorf("send minimal Codex request: %w", ctx.Err())
 		}
-		if strings.TrimSpace(stderr.String()) != "" {
-			return fmt.Errorf("minimal Codex request failed: %w (Codex diagnostics redacted)", err)
+		if diagnostic := wakeDiagnostic(stderr.String()); diagnostic != "" {
+			return fmt.Errorf("minimal Codex request failed: %w (%s)", err, diagnostic)
 		}
 		return fmt.Errorf("minimal Codex request failed: %w", err)
 	}
 	return nil
+}
+
+func wakeDiagnostic(stderr string) string {
+	if strings.TrimSpace(stderr) == "" {
+		return ""
+	}
+	lower := strings.ToLower(stderr)
+	switch {
+	case strings.Contains(lower, "401 unauthorized"),
+		strings.Contains(lower, "missing bearer or basic authentication"),
+		strings.Contains(lower, "authentication required"),
+		strings.Contains(lower, "invalid_grant"),
+		strings.Contains(lower, "refresh token") && strings.Contains(lower, "expired"):
+		return "Codex did not accept this account's saved credentials; re-login the account with 'codex-switch account login <alias>'"
+	case strings.Contains(lower, "429 too many requests"),
+		strings.Contains(lower, "rate limit"),
+		strings.Contains(lower, "usage limit"),
+		strings.Contains(lower, "quota exceeded"):
+		return "Codex rejected the request because this account is rate limited or out of quota"
+	case strings.Contains(lower, "model_not_found"),
+		strings.Contains(lower, "model is not supported"),
+		strings.Contains(lower, "unsupported model"),
+		strings.Contains(lower, "does not have access to model"):
+		return "the installed Codex default model is unavailable for this account"
+	case strings.Contains(lower, "unsupported value") && strings.Contains(lower, "reasoning"),
+		strings.Contains(lower, "reasoning effort") && strings.Contains(lower, "not supported"):
+		return "the configured reasoning effort is not supported by the installed Codex default model; update codex-switch and retry"
+	case strings.Contains(lower, "unrecognized option"),
+		strings.Contains(lower, "unexpected argument"),
+		strings.Contains(lower, "invalid value") && strings.Contains(lower, "--"):
+		return "the installed Codex CLI rejected the wake command options; update Codex and retry"
+	case strings.Contains(lower, "connection refused"),
+		strings.Contains(lower, "failed to connect"),
+		strings.Contains(lower, "dns error"),
+		strings.Contains(lower, "network is unreachable"),
+		strings.Contains(lower, "tls handshake"),
+		strings.Contains(lower, "timed out"):
+		return "Codex could not reach the service; check the network and retry"
+	default:
+		return "Codex returned an unrecognized diagnostic; details were redacted"
+	}
 }
 
 func readUpdatedAuth(temporaryHome string, original authschema.Document) (json.RawMessage, error) {

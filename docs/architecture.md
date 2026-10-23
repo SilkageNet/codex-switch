@@ -105,7 +105,8 @@ acquire shared operation lock
   -> decrypt and validate exactly one selected profile
   -> create a temporary CODEX_HOME and an unrelated empty workspace
   -> run one non-interactive, ephemeral Codex turn with a fixed short prompt
-  -> disable user config and rules; use minimal reasoning and a read-only sandbox
+  -> disable user config and rules; explicitly keep file-backed auth for the temporary home
+  -> use low reasoning and a read-only sandbox
   -> do not retry the turn
   -> query the account usage through App Server in the same temporary home
   -> reconcile any rotated credential generation and cache the new snapshot

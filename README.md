@@ -134,7 +134,7 @@ codex-switch account start-window work
 
 The command always targets exactly one saved alias and intentionally consumes a
 small amount of that account's Codex allowance. It does not retry the model
-request. Codex runs with a fixed short prompt, minimal reasoning, no persisted
+request. Codex runs with a fixed short prompt, low reasoning, no persisted
 session, an empty temporary workspace, a read-only sandbox, and no user config,
 rules, plugins, or MCP servers. After the request completes, `codex-switch`
 refreshes the usage snapshot so the returned reset time can be inspected. The
