@@ -311,7 +311,7 @@ func newAccountListCommand(options *Options) *cobra.Command {
 				return nil
 			}
 			writer := tabwriter.NewWriter(options.Output, 0, 4, 2, ' ', 0)
-			_, _ = fmt.Fprintln(writer, "\tALIAS\tIDENTITY\tPLAN\tLIMITS\tRESETS\tTOKENS\tUPDATED\tERROR")
+			_, _ = fmt.Fprintln(writer, "\tALIAS\tIDENTITY\tPLAN\tLIMITS\tCREDITS\tRESETS\tTOKENS\tUPDATED\tERROR")
 			for _, view := range views {
 				marker := " "
 				if view.Active {
@@ -321,8 +321,8 @@ func newAccountListCommand(options *Options) *cobra.Command {
 				if identity == "" {
 					identity = view.AccountID
 				}
-				plan, limits, resets, tokens, updated := summarizeUsage(view.Usage, time.Now())
-				_, _ = fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", marker, view.Alias, identity, plan, limits, resets, tokens, updated, compactUsageError(view.Usage))
+				plan, limits, credits, resets, tokens, updated := summarizeUsage(view.Usage, time.Now())
+				_, _ = fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", marker, view.Alias, identity, plan, limits, credits, resets, tokens, updated, compactUsageError(view.Usage))
 			}
 			if err := writer.Flush(); err != nil {
 				return err
@@ -1230,9 +1230,9 @@ func compactUsageError(usage *usageView) string {
 	return value
 }
 
-func summarizeUsage(usage *usageView, now time.Time) (string, string, string, string, string) {
+func summarizeUsage(usage *usageView, now time.Time) (string, string, string, string, string, string) {
 	if usage == nil || usage.Status == "unavailable" {
-		return "-", "unavailable", "-", "-", "-"
+		return "-", "unavailable", "-", "-", "-", "-"
 	}
 	plan := usage.PlanType
 	if plan == "" {
@@ -1251,6 +1251,7 @@ func summarizeUsage(usage *usageView, now time.Time) (string, string, string, st
 			limits = strings.Join(parts, " · ")
 		}
 	}
+	credits := compactCredits(mainRateLimit(usage.RateLimits))
 	resets := compactResetCredits(usage.RateLimits, now)
 	tokens := "-"
 	if usage.TokenUsage != nil && usage.TokenUsage.Summary.LifetimeTokens != nil {
@@ -1263,7 +1264,7 @@ func summarizeUsage(usage *usageView, now time.Time) (string, string, string, st
 	if usage.Error != "" {
 		updated += " (error)"
 	}
-	return plan, limits, resets, tokens, updated
+	return plan, limits, credits, resets, tokens, updated
 }
 
 func formatUsage(view accountView, now time.Time) string {
@@ -1317,6 +1318,7 @@ func formatUsage(view accountView, now time.Time) string {
 			}
 			fmt.Fprintf(&output, "\n  %s: %s", label, value)
 		}
+		formatCredits(&output, mainRateLimit(usage.RateLimits))
 		formatResetCredits(&output, usage.RateLimits.RateLimitResetCredits, now)
 	}
 	if usage.TokenUsage != nil {
@@ -1358,6 +1360,64 @@ func formatUsage(view accountView, now time.Time) string {
 		output.WriteString(usage.Error)
 	}
 	return output.String()
+}
+
+func compactCredits(limit *codexusage.RateLimitSnapshot) string {
+	if limit == nil || limit.Credits == nil {
+		return "-"
+	}
+	credits := limit.Credits
+	if credits.Unlimited {
+		return "unlimited"
+	}
+	if credits.Balance != nil && strings.TrimSpace(*credits.Balance) != "" {
+		return formatCreditAmount(*credits.Balance)
+	}
+	if credits.HasCredits {
+		return "available"
+	}
+	return "0"
+}
+
+func formatCredits(output *strings.Builder, limit *codexusage.RateLimitSnapshot) {
+	if limit == nil || limit.Credits == nil {
+		return
+	}
+	credits := limit.Credits
+	switch {
+	case credits.Unlimited:
+		output.WriteString("\nCredits: unlimited")
+	case credits.Balance != nil && strings.TrimSpace(*credits.Balance) != "":
+		fmt.Fprintf(output, "\nCredits: %s available", formatCreditAmount(*credits.Balance))
+	case credits.HasCredits:
+		output.WriteString("\nCredits: available; balance not provided")
+	default:
+		output.WriteString("\nCredits: none")
+	}
+}
+
+func formatCreditAmount(value string) string {
+	value = strings.TrimSpace(value)
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return value
+	}
+	formatted := strconv.FormatFloat(parsed, 'f', 2, 64)
+	parts := strings.SplitN(formatted, ".", 2)
+	integer := parts[0]
+	sign := ""
+	if strings.HasPrefix(integer, "-") {
+		sign = "-"
+		integer = strings.TrimPrefix(integer, "-")
+	}
+	for index := len(integer) - 3; index > 0; index -= 3 {
+		integer = integer[:index] + "," + integer[index:]
+	}
+	fraction := strings.TrimRight(parts[1], "0")
+	if fraction == "" {
+		return sign + integer
+	}
+	return sign + integer + "." + fraction
 }
 
 func mainRateLimit(limits *codexusage.RateLimits) *codexusage.RateLimitSnapshot {
