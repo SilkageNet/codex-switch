@@ -78,6 +78,8 @@ ignored, the command explicitly overrides `cli_auth_credentials_store` to
 `file` so the selected profile is read from the isolated temporary home.
 
 When returned by `account/rateLimits/read`, the client also preserves
+the remaining `credits.balance`, credit availability flags, optional individual
+spend-control limits, and
 `rateLimitResetCredits.availableCount` and its optional grant/expiration detail
 rows. Older services that omit this optional object remain supported.
 

@@ -18,6 +18,7 @@ func TestSummarizeUsage(t *testing.T) {
 	secondaryReset := now.Add(3*24*time.Hour + 4*time.Hour).Unix()
 	creditExpiry := now.Add(26 * time.Hour).Unix()
 	lifetime := int64(1_234_567)
+	balance := "61287.1250"
 	view := &usageView{
 		Status:    "fresh",
 		FetchedAt: now.Add(-10 * time.Second),
@@ -26,6 +27,7 @@ func TestSummarizeUsage(t *testing.T) {
 			"codex": {
 				Primary:   &codexusage.RateLimitWindow{UsedPercent: 21, WindowDurationMins: &primaryDuration, ResetsAt: &primaryReset},
 				Secondary: &codexusage.RateLimitWindow{UsedPercent: 81, WindowDurationMins: &secondaryDuration, ResetsAt: &secondaryReset},
+				Credits:   &codexusage.CreditsSnapshot{HasCredits: true, Balance: &balance},
 			},
 		}, RateLimitResetCredits: &codexusage.RateLimitResetCreditsSummary{
 			AvailableCount: 2,
@@ -33,9 +35,9 @@ func TestSummarizeUsage(t *testing.T) {
 		}},
 		TokenUsage: &codexusage.TokenUsage{Summary: codexusage.TokenUsageSummary{LifetimeTokens: &lifetime}},
 	}
-	plan, limits, resets, tokens, updated := summarizeUsage(view, now)
-	if plan != "pro" || limits != "5h 21% ↻2h 15m · 7d 81% ↻3d 4h" || resets != "2 exp 1d 2h" || tokens != "1.2M" || updated != "just now" {
-		t.Fatalf("unexpected summary: %q %q %q %q %q", plan, limits, resets, tokens, updated)
+	plan, limits, credits, resets, tokens, updated := summarizeUsage(view, now)
+	if plan != "pro" || limits != "5h 21% ↻2h 15m · 7d 81% ↻3d 4h" || credits != "61,287.12" || resets != "2 exp 1d 2h" || tokens != "1.2M" || updated != "just now" {
+		t.Fatalf("unexpected summary: %q %q %q %q %q %q", plan, limits, credits, resets, tokens, updated)
 	}
 }
 
@@ -86,6 +88,7 @@ func TestFormatUsageShowsDetailedWindows(t *testing.T) {
 	expires := now.Add(72 * time.Hour).Unix()
 	name := "Codex"
 	title := "Rate-limit reset"
+	balance := "61287.1250"
 	view := accountView{
 		Alias:  "work",
 		Email:  "person@example.com",
@@ -96,7 +99,11 @@ func TestFormatUsageShowsDetailedWindows(t *testing.T) {
 			PlanType:  "plus",
 			RateLimits: &codexusage.RateLimits{
 				RateLimitsByLimitID: map[string]codexusage.RateLimitSnapshot{
-					"codex": {LimitName: &name, Primary: &codexusage.RateLimitWindow{UsedPercent: 33, WindowDurationMins: &duration, ResetsAt: &reset}},
+					"codex": {
+						LimitName: &name,
+						Primary:   &codexusage.RateLimitWindow{UsedPercent: 33, WindowDurationMins: &duration, ResetsAt: &reset},
+						Credits:   &codexusage.CreditsSnapshot{HasCredits: true, Balance: &balance},
+					},
 				},
 				RateLimitResetCredits: &codexusage.RateLimitResetCreditsSummary{
 					AvailableCount: 2,
@@ -116,6 +123,7 @@ func TestFormatUsageShowsDetailedWindows(t *testing.T) {
 		"work (person@example.com) [active]",
 		"Plan: plus",
 		"Codex: 5h 33% used, resets in 2h 15m at " + formatLocalTime(time.Unix(reset, 0)),
+		"Credits: 61,287.12 available",
 		"Earned resets: 2 available",
 		"Rate-limit reset: available; expires in 3d 0h at " + formatLocalTime(time.Unix(expires, 0)),
 		"granted " + formatLocalTime(time.Unix(granted, 0)),
@@ -124,6 +132,28 @@ func TestFormatUsageShowsDetailedWindows(t *testing.T) {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("output %q does not contain %q", output, expected)
 		}
+	}
+}
+
+func TestCompactCreditsDistinguishesStates(t *testing.T) {
+	balance := "46476.3720375000"
+	tests := []struct {
+		name  string
+		limit *codexusage.RateLimitSnapshot
+		want  string
+	}{
+		{name: "unavailable", want: "-"},
+		{name: "none", limit: &codexusage.RateLimitSnapshot{Credits: &codexusage.CreditsSnapshot{}}, want: "0"},
+		{name: "available without balance", limit: &codexusage.RateLimitSnapshot{Credits: &codexusage.CreditsSnapshot{HasCredits: true}}, want: "available"},
+		{name: "balance", limit: &codexusage.RateLimitSnapshot{Credits: &codexusage.CreditsSnapshot{HasCredits: true, Balance: &balance}}, want: "46,476.37"},
+		{name: "unlimited", limit: &codexusage.RateLimitSnapshot{Credits: &codexusage.CreditsSnapshot{Unlimited: true}}, want: "unlimited"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := compactCredits(test.limit); got != test.want {
+				t.Fatalf("compactCredits() = %q, want %q", got, test.want)
+			}
+		})
 	}
 }
 

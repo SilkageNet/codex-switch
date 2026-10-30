@@ -116,10 +116,11 @@ shows an error summary in the `ERROR` column, and prints the complete redacted
 error below the table. The last failure is retained in the local usage cache so
 `--cached` remains diagnostic after the failing process exits.
 
-The compact list shows the next automatic reset for each quota window. Its
+The compact list shows the next automatic reset for each quota window and a
+`CREDITS` column with the remaining credit balance when Codex provides it. Its
 `RESETS` column is separate: it reports earned manual rate-limit resets and the
-nearest known expiration, when Codex provides them. `account usage <alias>`
-shows exact local reset times plus each returned earned-reset grant and expiry.
+nearest known expiration. `account usage <alias>` shows the exact credit balance,
+local reset times, and each returned earned-reset grant and expiry.
 The authoritative earned-reset count can be present even when the service omits
 or caps its detail rows.
 
