@@ -31,10 +31,11 @@
   refresh generations, and coordinates with switching through the same lock.
 - `usagecache` stores credential-free successful snapshots separately from the
   encrypted vault.
-- `projectstate` detects the desktop's legacy-to-App-Server project migration,
-  restores canonical thread assignments through the official experimental App
-  Server API, and advances the desktop checkpoint only after every assignment
-  is confirmed.
+- `projectstate` maintains a credential-free shared local-project catalog,
+  restores a missing desktop projection after account changes, reconciles
+  canonical thread assignments through the official experimental App Server
+  API, and advances the desktop checkpoint only after every assignment is
+  confirmed.
 - `atomicfile` publishes complete files and refuses symlink destinations.
 - `doctor` reports only redacted, non-secret local facts.
 

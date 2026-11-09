@@ -25,24 +25,43 @@ import (
 const (
 	globalStateName    = ".codex-global-state.json"
 	maxGlobalStateSize = 32 << 20
+	maxCatalogSize     = 32 << 20
 	maxProtocolMessage = 8 << 20
+	catalogVersion     = 1
 )
+
+var projectionKeys = []string{
+	"local-projects",
+	"project-order",
+	"project-appearances",
+	"thread-project-assignments",
+	"thread-project-membership-host-ids",
+	"app-server-project-id-by-legacy-project-id-by-host",
+	"app-server-projects-migration-by-host",
+}
 
 type Inspection struct {
 	Available                 bool   `json:"available"`
 	HostKey                   string `json:"hostKey,omitempty"`
 	Projects                  int    `json:"projects"`
+	DesktopProjects           int    `json:"desktopProjects"`
+	CatalogProjects           int    `json:"catalogProjects"`
 	LegacyAssignments         int    `json:"legacyAssignments"`
+	DesktopAssignments        int    `json:"desktopAssignments"`
+	CatalogAssignments        int    `json:"catalogAssignments"`
 	ResolvableAssignments     int    `json:"resolvableAssignments"`
 	PendingAssignments        int    `json:"pendingAssignments"`
 	ProjectsMigrated          bool   `json:"projectsMigrated"`
 	ThreadAssignmentsMigrated bool   `json:"threadAssignmentsMigrated"`
+	ProjectionMissing         bool   `json:"projectionMissing"`
 	NeedsRepair               bool   `json:"needsRepair"`
 }
 
 type Result struct {
 	Inspection
 	Repaired            bool   `json:"repaired"`
+	ProjectionRestored  bool   `json:"projectionRestored"`
+	CatalogUpdated      bool   `json:"catalogUpdated"`
 	AssignmentsRepaired int    `json:"assignmentsRepaired"`
 	Backup              string `json:"backup,omitempty"`
 }
@@ -52,7 +71,23 @@ type Service struct {
 	Binary        string
 	BinaryError   error
 	ClientVersion string
+	CatalogPath   string
 	Runner        *Runner
+}
+
+type catalog struct {
+	Version    int                        `json:"version"`
+	CapturedAt time.Time                  `json:"capturedAt"`
+	CodexHome  string                     `json:"codexHome"`
+	Fields     map[string]json.RawMessage `json:"fields"`
+}
+
+type projection struct {
+	fields      map[string]json.RawMessage
+	projects    int
+	assignments int
+	resolvable  int
+	source      string
 }
 
 type assignment struct {
@@ -89,11 +124,34 @@ func (service Service) Inspect() (Inspection, error) {
 	document, err := load(service.Home.Path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return Inspection{}, nil
+			return service.inspectRecovery(Inspection{HostKey: "local:" + service.Home.Path})
 		}
 		return Inspection{}, err
 	}
-	return document.inspection, nil
+	return service.inspectRecovery(document.inspection)
+}
+
+func (service Service) inspectRecovery(inspection Inspection) (Inspection, error) {
+	inspection.DesktopProjects = inspection.Projects
+	inspection.DesktopAssignments = inspection.LegacyAssignments
+	recovered, err := service.findProjection()
+	if err != nil {
+		return Inspection{}, err
+	}
+	if recovered.projects == 0 {
+		return inspection, nil
+	}
+	inspection.Available = true
+	inspection.CatalogProjects = recovered.projects
+	inspection.CatalogAssignments = recovered.assignments
+	if inspection.DesktopProjects == 0 {
+		inspection.Projects = recovered.projects
+		inspection.LegacyAssignments = recovered.assignments
+		inspection.ResolvableAssignments = recovered.resolvable
+		inspection.ProjectionMissing = true
+		inspection.NeedsRepair = true
+	}
+	return inspection, nil
 }
 
 func (service Service) Repair(ctx context.Context, allowRunning, force bool) (Result, error) {
@@ -106,16 +164,23 @@ func (service Service) Repair(ctx context.Context, allowRunning, force bool) (Re
 	document, err := load(service.Home.Path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return Result{}, nil
+			return Result{}, errors.New("codex desktop state does not exist yet; launch Codex once before restoring projects")
 		}
 		return Result{}, err
 	}
-	result := Result{Inspection: document.inspection}
-	if !force && !document.inspection.NeedsRepair {
-		return result, nil
+	inspection, err := service.inspectRecovery(document.inspection)
+	if err != nil {
+		return Result{}, err
 	}
-	if len(document.resolved) == 0 {
-		return result, errors.New("no resolvable local project assignments were found")
+	result := Result{Inspection: inspection}
+	if !force && !inspection.NeedsRepair {
+		if service.CatalogPath != "" && document.inspection.Projects > 0 {
+			if err := service.saveCatalog(document); err != nil {
+				return result, err
+			}
+			result.CatalogUpdated = true
+		}
+		return result, nil
 	}
 	if !allowRunning {
 		running, detectErr := process.DetectCodex()
@@ -125,6 +190,40 @@ func (service Service) Repair(ctx context.Context, allowRunning, force bool) (Re
 		if len(running) > 0 {
 			return result, fmt.Errorf("codex is still running (PID %d, %s); close it before repairing project assignments or explicitly pass --allow-running", running[0].PID, running[0].Command)
 		}
+	}
+	if inspection.ProjectionMissing {
+		recovered, recoveryErr := service.findProjection()
+		if recoveryErr != nil {
+			return result, recoveryErr
+		}
+		if recovered.projects == 0 {
+			return result, errors.New("the desktop project catalog is missing and no codex-switch snapshot or backup can restore it")
+		}
+		backup, restoreErr := document.restoreProjection(recovered)
+		if restoreErr != nil {
+			return result, restoreErr
+		}
+		result.Repaired = true
+		result.ProjectionRestored = true
+		result.Backup = backup
+		document, err = load(service.Home.Path)
+		if err != nil {
+			return result, err
+		}
+	}
+	if service.CatalogPath != "" && document.inspection.Projects > 0 {
+		if err := service.saveCatalog(document); err != nil {
+			return result, err
+		}
+		result.CatalogUpdated = true
+	}
+	if !force && !document.inspection.NeedsRepair {
+		result.Inspection = document.inspection
+		result.NeedsRepair = false
+		return result, nil
+	}
+	if len(document.resolved) == 0 {
+		return result, errors.New("no resolvable local project assignments were found")
 	}
 	if service.BinaryError != nil {
 		return result, service.BinaryError
@@ -146,7 +245,14 @@ func (service Service) Repair(ctx context.Context, allowRunning, force bool) (Re
 	}
 	result.Repaired = true
 	result.AssignmentsRepaired = len(document.resolved)
-	result.Backup = backup
+	if result.Backup == "" {
+		result.Backup = backup
+	}
+	result.Inspection = document.inspection
+	result.DesktopProjects = len(document.projects)
+	result.Projects = len(document.projects)
+	result.DesktopAssignments = len(document.assignments)
+	result.LegacyAssignments = len(document.assignments)
 	result.ThreadAssignmentsMigrated = true
 	result.PendingAssignments = 0
 	result.NeedsRepair = false
@@ -208,7 +314,9 @@ func load(home string) (document, error) {
 		Available:                 available,
 		HostKey:                   hostKey,
 		Projects:                  len(projects),
+		DesktopProjects:           len(projects),
 		LegacyAssignments:         len(assignments),
+		DesktopAssignments:        len(assignments),
 		ResolvableAssignments:     len(resolved),
 		PendingAssignments:        len(migrationState.PendingThreadAssignmentIDs),
 		ProjectsMigrated:          migrationState.ProjectsMigrated,
@@ -227,6 +335,156 @@ func load(home string) (document, error) {
 		inspection:   inspection,
 		resolved:     resolved,
 	}, nil
+}
+
+func (service Service) findProjection() (projection, error) {
+	if service.CatalogPath != "" {
+		data, err := atomicfile.ReadLimited(service.CatalogPath, maxCatalogSize)
+		if err == nil {
+			var saved catalog
+			if decodeErr := json.Unmarshal(data, &saved); decodeErr != nil {
+				return projection{}, fmt.Errorf("decode shared project catalog: %w", decodeErr)
+			}
+			if saved.Version != catalogVersion {
+				return projection{}, fmt.Errorf("unsupported shared project catalog version %d", saved.Version)
+			}
+			if saved.CodexHome == service.Home.Path {
+				result, decodeErr := projectionFromFields(saved.Fields, service.CatalogPath)
+				if decodeErr != nil {
+					return projection{}, decodeErr
+				}
+				if result.projects > 0 {
+					return result, nil
+				}
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return projection{}, fmt.Errorf("read shared project catalog: %w", err)
+		}
+	}
+
+	pattern := filepath.Join(service.Home.Path, globalStateName+".codex-switch.bak.*")
+	backups, err := filepath.Glob(pattern)
+	if err != nil {
+		return projection{}, fmt.Errorf("find Codex project backups: %w", err)
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(backups)))
+	for _, backup := range backups {
+		data, readErr := atomicfile.ReadLimited(backup, maxGlobalStateSize)
+		if readErr != nil {
+			continue
+		}
+		var raw map[string]json.RawMessage
+		if decodeErr := json.Unmarshal(data, &raw); decodeErr != nil {
+			continue
+		}
+		result, decodeErr := projectionFromFields(raw, backup)
+		if decodeErr == nil && result.projects > 0 {
+			return result, nil
+		}
+	}
+	return projection{}, nil
+}
+
+func projectionFromFields(source map[string]json.RawMessage, name string) (projection, error) {
+	fields := make(map[string]json.RawMessage, len(projectionKeys))
+	for _, key := range projectionKeys {
+		if value := source[key]; len(value) > 0 {
+			fields[key] = append(json.RawMessage(nil), value...)
+		}
+	}
+	var projects map[string]json.RawMessage
+	if value := fields["local-projects"]; len(value) > 0 {
+		if err := json.Unmarshal(value, &projects); err != nil {
+			return projection{}, fmt.Errorf("decode local projects from %s: %w", name, err)
+		}
+	}
+	var assignments map[string]assignment
+	if value := fields["thread-project-assignments"]; len(value) > 0 {
+		if err := json.Unmarshal(value, &assignments); err != nil {
+			return projection{}, fmt.Errorf("decode project assignments from %s: %w", name, err)
+		}
+	}
+	var mappings map[string]map[string]string
+	if value := fields["app-server-project-id-by-legacy-project-id-by-host"]; len(value) > 0 {
+		if err := json.Unmarshal(value, &mappings); err != nil {
+			return projection{}, fmt.Errorf("decode project ID mappings from %s: %w", name, err)
+		}
+	}
+	mapped := map[string]bool{}
+	for _, byLegacyID := range mappings {
+		for legacyID, serverID := range byLegacyID {
+			if legacyID != "" && serverID != "" {
+				mapped[legacyID] = true
+			}
+		}
+	}
+	resolvable := 0
+	for threadID, item := range assignments {
+		if threadID != "" && item.ProjectKind == "local" && mapped[item.ProjectID] {
+			resolvable++
+		}
+	}
+	return projection{fields: fields, projects: len(projects), assignments: len(assignments), resolvable: resolvable, source: name}, nil
+}
+
+func (service Service) saveCatalog(document document) error {
+	fields := make(map[string]json.RawMessage, len(projectionKeys))
+	for _, key := range projectionKeys {
+		if value := document.raw[key]; len(value) > 0 {
+			fields[key] = append(json.RawMessage(nil), value...)
+		}
+	}
+	saved := catalog{
+		Version:    catalogVersion,
+		CapturedAt: time.Now().UTC(),
+		CodexHome:  service.Home.Path,
+		Fields:     fields,
+	}
+	data, err := json.MarshalIndent(saved, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode shared project catalog: %w", err)
+	}
+	data = append(data, '\n')
+	if err := atomicfile.Write(service.CatalogPath, data, 0o600); err != nil {
+		return fmt.Errorf("save shared project catalog: %w", err)
+	}
+	return nil
+}
+
+func (document *document) restoreProjection(recovered projection) (string, error) {
+	if recovered.projects == 0 {
+		return "", errors.New("project recovery source is empty")
+	}
+	for _, key := range projectionKeys {
+		value := recovered.fields[key]
+		if len(value) == 0 {
+			continue
+		}
+		if key == "app-server-projects-migration-by-host" && len(document.raw[key]) > 0 {
+			continue
+		}
+		document.raw[key] = append(json.RawMessage(nil), value...)
+	}
+	output, err := json.Marshal(document.raw)
+	if err != nil {
+		return "", err
+	}
+	output = append(output, '\n')
+	original, err := atomicfile.ReadLimited(document.statePath, maxGlobalStateSize)
+	if err != nil {
+		return "", err
+	}
+	if atomicfile.Hash(original) != document.originalHash {
+		return "", errors.New("codex global state changed while restoring the project catalog; close Codex and retry")
+	}
+	backup := fmt.Sprintf("%s.codex-switch.bak.%s", document.statePath, time.Now().UTC().Format("20060102T150405.000000000Z"))
+	if err := atomicfile.Write(backup, original, 0o600); err != nil {
+		return "", fmt.Errorf("back up global state: %w", err)
+	}
+	if err := atomicfile.Write(document.statePath, output, 0o600); err != nil {
+		return "", fmt.Errorf("restore desktop project catalog from %s: %w", recovered.source, err)
+	}
+	return backup, nil
 }
 
 func (document *document) markMigrated() (string, error) {
