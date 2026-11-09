@@ -77,6 +77,9 @@ codex-switch current
 # Detect or reconcile a login performed directly in Codex.
 codex-switch sync --check
 codex-switch sync
+
+# Inspect Codex's local project migration after an app update.
+codex-switch project status
 ```
 
 Use `codex-switch doctor` before reporting a problem. Machine-readable output is
@@ -149,6 +152,8 @@ codex-switch current
 codex-switch status
 codex-switch sync [--check] [--prefer-live] [--as <alias>]
 codex-switch doctor
+codex-switch project status
+codex-switch project repair [--force]
 codex-switch use <alias>
 codex-switch deactivate
 codex-switch select
@@ -194,12 +199,25 @@ same safe reconciliation without rewriting `auth.json`, closing Codex, or
 requiring a restart. A real switch to a different account still requires Codex
 to be stopped.
 
+Recent Codex desktop releases moved canonical thread-to-project membership into
+the App Server state database while retaining a legacy desktop-side assignment
+map. If that upstream migration is incomplete, `project status` reports it and
+`project repair` reconciles the legacy IDs through the official App Server
+protocol. A normal `use` automatically performs this repair when Codex is
+closed. The operation is idempotent and creates a timestamped backup of
+`.codex-global-state.json` before marking the migration complete.
+
 ## What a switch changes
 
 Normal account switches modify only:
 
 - `$CODEX_HOME/auth.json`
 - `codex-switch`'s own state and encrypted vault
+
+When Codex reports an incomplete local-project migration, a switch performed
+while Codex is closed may additionally restore `threads.project_id` through the
+official App Server and update the backed-up desktop migration checkpoint. It
+does not copy projects or sessions into per-account homes.
 
 An account-usage query may persist an officially refreshed credential generation
 back to the encrypted vault. If the queried profile is active, the same
@@ -213,8 +231,8 @@ session into the shared `CODEX_HOME`.
 
 Initialization may make a one-time, backed-up change to
 `$CODEX_HOME/config.toml` to set `cli_auth_credentials_store = "file"`.
-`codex-switch` does not rewrite session history or Codex configuration during a
-switch.
+`codex-switch` does not rewrite rollout/session history or Codex configuration
+during a switch.
 
 ## Documentation
 

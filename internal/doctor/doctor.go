@@ -11,6 +11,7 @@ import (
 	"github.com/SilkageNet/codex-switch/internal/codexlogin"
 	appconfig "github.com/SilkageNet/codex-switch/internal/config"
 	"github.com/SilkageNet/codex-switch/internal/process"
+	"github.com/SilkageNet/codex-switch/internal/projectstate"
 	"github.com/SilkageNet/codex-switch/internal/switcher"
 	"github.com/SilkageNet/codex-switch/internal/vault"
 )
@@ -41,6 +42,16 @@ func Run(home codexhome.Home, paths appconfig.Paths, manager *vault.Manager, cod
 		add("codex_home", "warning", home.Path+" does not exist yet")
 	} else {
 		add("codex_home", "error", fmt.Sprintf("cannot inspect %s: %v", home.Path, err))
+	}
+
+	if inspection, err := (projectstate.Service{Home: home}).Inspect(); err != nil {
+		add("project_assignments", "warning", err.Error())
+	} else if !inspection.Available {
+		add("project_assignments", "ok", "no local app-server migration state")
+	} else if inspection.NeedsRepair {
+		add("project_assignments", "warning", fmt.Sprintf("%d assignment(s) pending; run codex-switch project repair after closing Codex", inspection.PendingAssignments))
+	} else {
+		add("project_assignments", "ok", fmt.Sprintf("%d assignment(s), migration complete", inspection.ResolvableAssignments))
 	}
 
 	if mode, err := home.CredentialStore(); err != nil {
