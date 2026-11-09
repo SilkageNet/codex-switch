@@ -24,6 +24,8 @@ import (
 	appconfig "github.com/SilkageNet/codex-switch/internal/config"
 	"github.com/SilkageNet/codex-switch/internal/doctor"
 	"github.com/SilkageNet/codex-switch/internal/launcher"
+	"github.com/SilkageNet/codex-switch/internal/process"
+	"github.com/SilkageNet/codex-switch/internal/projectstate"
 	"github.com/SilkageNet/codex-switch/internal/secretstore"
 	appstate "github.com/SilkageNet/codex-switch/internal/state"
 	"github.com/SilkageNet/codex-switch/internal/switcher"
@@ -106,6 +108,7 @@ func NewCommand(version string) *cobra.Command {
 		newStatusCommand(options),
 		newSyncCommand(options),
 		newDoctorCommand(options),
+		newProjectCommand(options),
 		newUseCommand(options),
 		newDeactivateCommand(options),
 		newSelectCommand(options),
@@ -629,6 +632,28 @@ func newUseCommand(options *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			var projectRepair *projectstate.Result
+			var projectWarning string
+			inspection, inspectErr := runtime.projectService(options.Version).Inspect()
+			if inspectErr != nil {
+				projectWarning = "Project migration status could not be inspected: " + inspectErr.Error()
+			} else if inspection.NeedsRepair {
+				running, detectErr := process.DetectCodex()
+				switch {
+				case detectErr != nil:
+					projectWarning = "Project assignment migration is pending; run 'codex-switch project repair' after closing Codex."
+				case allowRunning || len(running) > 0:
+					projectWarning = "Project assignment migration is pending; run 'codex-switch project repair' after closing Codex."
+				default:
+					ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+					repaired, repairErr := runtime.projectService(options.Version).Repair(ctx, false, false)
+					cancel()
+					if repairErr != nil {
+						return fmt.Errorf("account switched to %s but project assignment migration failed: %w", result.Alias, repairErr)
+					}
+					projectRepair = &repaired
+				}
+			}
 			if launch {
 				if err := launcher.Codex(); err != nil {
 					return fmt.Errorf("account switched but Codex could not be launched: %w", err)
@@ -641,12 +666,91 @@ func newUseCommand(options *Options) *cobra.Command {
 					message = fmt.Sprintf("Account %s is already active. Reconciled changes made outside codex-switch; no restart is required.", result.Alias)
 				}
 			}
-			return options.render(result, message)
+			if projectRepair != nil && projectRepair.Repaired {
+				message += fmt.Sprintf(" Repaired %d local project assignment(s).", projectRepair.AssignmentsRepaired)
+			}
+			if projectWarning != "" {
+				message += "\nWarning: " + projectWarning
+			}
+			view := struct {
+				switcher.Result
+				ProjectMigration *projectstate.Result `json:"projectMigration,omitempty"`
+				Warning          string               `json:"warning,omitempty"`
+			}{Result: result, ProjectMigration: projectRepair, Warning: projectWarning}
+			return options.render(view, message)
 		},
 	}
 	command.Flags().BoolVar(&allowRunning, "allow-running", false, "switch even when a Codex process is detected")
 	command.Flags().BoolVar(&launch, "launch", false, "launch Codex after switching")
 	return command
+}
+
+func newProjectCommand(options *Options) *cobra.Command {
+	command := &cobra.Command{Use: "project", Aliases: []string{"projects"}, Short: "Inspect and repair shared local project state"}
+	command.AddCommand(newProjectStatusCommand(options), newProjectRepairCommand(options))
+	return command
+}
+
+func newProjectStatusCommand(options *Options) *cobra.Command {
+	return &cobra.Command{
+		Use:   "status",
+		Short: "Inspect Codex project assignment migration",
+		RunE: func(*cobra.Command, []string) error {
+			runtime, err := options.loadProjectRuntime()
+			if err != nil {
+				return err
+			}
+			inspection, err := runtime.projectService(options.Version).Inspect()
+			if err != nil {
+				return err
+			}
+			message := formatProjectInspection(inspection)
+			return options.render(inspection, message)
+		},
+	}
+}
+
+func newProjectRepairCommand(options *Options) *cobra.Command {
+	var allowRunning bool
+	var force bool
+	command := &cobra.Command{
+		Use:   "repair",
+		Short: "Reconcile legacy project assignments through Codex App Server",
+		RunE: func(*cobra.Command, []string) error {
+			runtime, err := options.loadProjectRuntime()
+			if err != nil {
+				return err
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+			defer cancel()
+			result, err := runtime.projectService(options.Version).Repair(ctx, allowRunning, force)
+			if err != nil {
+				return err
+			}
+			message := "Project assignments are already consistent."
+			if result.Repaired {
+				message = fmt.Sprintf("Repaired %d local project assignment(s). Backup: %s", result.AssignmentsRepaired, result.Backup)
+			}
+			return options.render(result, message)
+		},
+	}
+	command.Flags().BoolVar(&allowRunning, "allow-running", false, "repair while Codex is running (may be overwritten by the desktop app)")
+	command.Flags().BoolVar(&force, "force", false, "reapply every resolvable legacy project assignment")
+	return command
+}
+
+func formatProjectInspection(inspection projectstate.Inspection) string {
+	if !inspection.Available {
+		return "Codex has no local app-server project migration state for this CODEX_HOME."
+	}
+	status := "complete"
+	if inspection.NeedsRepair {
+		status = "repair needed"
+	} else if !inspection.ThreadAssignmentsMigrated {
+		status = "not applicable"
+	}
+	return fmt.Sprintf("Projects: %d\nAssignments: %d (%d resolvable, %d pending)\nMigration: %s",
+		inspection.Projects, inspection.LegacyAssignments, inspection.ResolvableAssignments, inspection.PendingAssignments, status)
 }
 
 func newDeactivateCommand(options *Options) *cobra.Command {
@@ -1029,8 +1133,26 @@ func (options *Options) loadRuntimeForDoctor() (runtimeState, error) {
 	return runtimeState{home: home, paths: paths, manager: vault.New(paths.Vault, store), bin: bin, binErr: binErr}, nil
 }
 
+func (options *Options) loadProjectRuntime() (runtimeState, error) {
+	home, err := codexhome.Resolve(options.CodexHome)
+	if err != nil {
+		return runtimeState{}, err
+	}
+	bin, binErr := codexlogin.FindBinary(options.CodexBin)
+	return runtimeState{home: home, bin: bin, binErr: binErr}, nil
+}
+
 func (runtime runtimeState) switcher() switcher.Service {
 	return switcher.Service{Home: runtime.home, Paths: runtime.paths, Vault: runtime.manager}
+}
+
+func (runtime runtimeState) projectService(version string) projectstate.Service {
+	return projectstate.Service{
+		Home:          runtime.home,
+		Binary:        runtime.bin,
+		BinaryError:   runtime.binErr,
+		ClientVersion: version,
+	}
 }
 
 func (runtime runtimeState) usageService(version string) accountusage.Service {

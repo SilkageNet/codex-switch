@@ -31,6 +31,10 @@
   refresh generations, and coordinates with switching through the same lock.
 - `usagecache` stores credential-free successful snapshots separately from the
   encrypted vault.
+- `projectstate` detects the desktop's legacy-to-App-Server project migration,
+  restores canonical thread assignments through the official experimental App
+  Server API, and advances the desktop checkpoint only after every assignment
+  is confirmed.
 - `atomicfile` publishes complete files and refuses symlink destinations.
 - `doctor` reports only redacted, non-secret local facts.
 
@@ -55,6 +59,26 @@ acquire lock
 The journal contains only profile IDs, hashes, and timestamps. If the process
 stops after replacement but before state persistence, recovery compares the live
 file with both hashes and completes the state transition.
+
+## Local project compatibility repair
+
+```text
+acquire shared operation lock
+  -> read the desktop legacy project and thread-assignment maps
+  -> resolve legacy project IDs to App Server project IDs
+  -> require Codex to be closed
+  -> initialize App Server with experimental API capability
+  -> validate every target with project/list
+  -> apply and confirm thread/metadata/update(projectId) idempotently
+  -> back up .codex-global-state.json
+  -> mark thread assignment migration complete and clear its pending queue
+```
+
+The existing legacy assignment map remains intact because current desktop
+releases still use it for sidebar ordering and reconciliation. A failed or
+interrupted run does not advance the checkpoint, so the repair can safely be
+retried. `--allow-running` is an expert recovery override because an open
+desktop process can overwrite its state file from memory.
 
 ## Live-state reconciliation
 

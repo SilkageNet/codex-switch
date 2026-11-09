@@ -53,6 +53,30 @@ credential after replacement.
 `--allow-running` exists for recovery and expert use. It is not recommended for
 ordinary switching.
 
+## Projects are empty or change after switching accounts
+
+Recent Codex releases store projects and thread-to-project membership
+separately. A desktop migration can create the projects successfully while
+leaving every canonical thread `projectId` empty. Inspect the redacted status:
+
+```bash
+codex-switch project status
+codex-switch doctor
+```
+
+If repair is needed, fully quit Codex/ChatGPT and run:
+
+```bash
+codex-switch project repair
+```
+
+The repair uses Codex App Server rather than editing its SQLite database. It
+keeps the desktop's legacy project map, verifies the new project IDs, applies
+each assignment idempotently, and backs up `.codex-global-state.json` before
+advancing the migration checkpoint. Use `--force` to reapply all retained
+assignments after a later Codex regression. Avoid `--allow-running` unless the
+desktop cannot be stopped; its in-memory state may overwrite the repair.
+
 ## Active account is unmanaged
 
 Inspect it and preserve it before switching:
