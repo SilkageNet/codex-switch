@@ -637,13 +637,17 @@ func newUseCommand(options *Options) *cobra.Command {
 			inspection, inspectErr := runtime.projectService(options.Version).Inspect()
 			if inspectErr != nil {
 				projectWarning = "Project migration status could not be inspected: " + inspectErr.Error()
-			} else if inspection.NeedsRepair {
+			} else {
 				running, detectErr := process.DetectCodex()
 				switch {
 				case detectErr != nil:
-					projectWarning = "Project assignment migration is pending; run 'codex-switch project repair' after closing Codex."
+					if inspection.NeedsRepair {
+						projectWarning = "Shared project state needs repair; run 'codex-switch project repair' after closing Codex."
+					}
 				case allowRunning || len(running) > 0:
-					projectWarning = "Project assignment migration is pending; run 'codex-switch project repair' after closing Codex."
+					if inspection.NeedsRepair {
+						projectWarning = "Shared project state needs repair; run 'codex-switch project repair' after closing Codex."
+					}
 				default:
 					ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 					repaired, repairErr := runtime.projectService(options.Version).Repair(ctx, false, false)
@@ -667,7 +671,12 @@ func newUseCommand(options *Options) *cobra.Command {
 				}
 			}
 			if projectRepair != nil && projectRepair.Repaired {
-				message += fmt.Sprintf(" Repaired %d local project assignment(s).", projectRepair.AssignmentsRepaired)
+				if projectRepair.ProjectionRestored {
+					message += fmt.Sprintf(" Restored %d shared local project(s).", projectRepair.Projects)
+				}
+				if projectRepair.AssignmentsRepaired > 0 {
+					message += fmt.Sprintf(" Repaired %d local project assignment(s).", projectRepair.AssignmentsRepaired)
+				}
 			}
 			if projectWarning != "" {
 				message += "\nWarning: " + projectWarning
@@ -727,9 +736,11 @@ func newProjectRepairCommand(options *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			message := "Project assignments are already consistent."
+			message := "Shared project state is already consistent."
 			if result.Repaired {
-				message = fmt.Sprintf("Repaired %d local project assignment(s). Backup: %s", result.AssignmentsRepaired, result.Backup)
+				message = fmt.Sprintf("Restored %d shared local project(s) and repaired %d assignment(s). Backup: %s", result.Projects, result.AssignmentsRepaired, result.Backup)
+			} else if result.CatalogUpdated {
+				message = fmt.Sprintf("Saved %d shared local project(s) for future account switches.", result.Projects)
 			}
 			return options.render(result, message)
 		},
@@ -749,8 +760,14 @@ func formatProjectInspection(inspection projectstate.Inspection) string {
 	} else if !inspection.ThreadAssignmentsMigrated {
 		status = "not applicable"
 	}
-	return fmt.Sprintf("Projects: %d\nAssignments: %d (%d resolvable, %d pending)\nMigration: %s",
-		inspection.Projects, inspection.LegacyAssignments, inspection.ResolvableAssignments, inspection.PendingAssignments, status)
+	projection := "present"
+	if inspection.ProjectionMissing {
+		projection = "missing (recoverable)"
+	}
+	return fmt.Sprintf("Projects: %d shared (%d desktop, %d saved)\nAssignments: %d shared (%d desktop, %d saved; %d resolvable, %d pending)\nDesktop projection: %s\nMigration: %s",
+		inspection.Projects, inspection.DesktopProjects, inspection.CatalogProjects,
+		inspection.LegacyAssignments, inspection.DesktopAssignments, inspection.CatalogAssignments,
+		inspection.ResolvableAssignments, inspection.PendingAssignments, projection, status)
 }
 
 func newDeactivateCommand(options *Options) *cobra.Command {
@@ -1138,8 +1155,12 @@ func (options *Options) loadProjectRuntime() (runtimeState, error) {
 	if err != nil {
 		return runtimeState{}, err
 	}
+	paths, err := appconfig.ResolvePaths(options.AppHome)
+	if err != nil {
+		return runtimeState{}, err
+	}
 	bin, binErr := codexlogin.FindBinary(options.CodexBin)
-	return runtimeState{home: home, bin: bin, binErr: binErr}, nil
+	return runtimeState{home: home, paths: paths, bin: bin, binErr: binErr}, nil
 }
 
 func (runtime runtimeState) switcher() switcher.Service {
@@ -1152,6 +1173,7 @@ func (runtime runtimeState) projectService(version string) projectstate.Service 
 		Binary:        runtime.bin,
 		BinaryError:   runtime.binErr,
 		ClientVersion: version,
+		CatalogPath:   runtime.paths.ProjectCatalog,
 	}
 }
 

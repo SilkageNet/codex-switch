@@ -200,12 +200,13 @@ requiring a restart. A real switch to a different account still requires Codex
 to be stopped.
 
 Recent Codex desktop releases moved canonical thread-to-project membership into
-the App Server state database while retaining a legacy desktop-side assignment
-map. If that upstream migration is incomplete, `project status` reports it and
-`project repair` reconciles the legacy IDs through the official App Server
-protocol. A normal `use` automatically performs this repair when Codex is
-closed. The operation is idempotent and creates a timestamped backup of
-`.codex-global-state.json` before marking the migration complete.
+the App Server state database while the desktop still consumes a local project
+catalog during startup. `codex-switch` keeps a credential-free shared catalog
+under `CODEX_SWITCH_HOME`. A normal `use` captures that catalog when it is
+healthy and restores it when an account change removes the desktop projection;
+it then reconciles any pending legacy IDs through the official App Server
+protocol. No separate `project repair` is required in the normal closed-app
+switch flow. Every desktop-state change is backed up before replacement.
 
 ## What a switch changes
 
@@ -214,10 +215,11 @@ Normal account switches modify only:
 - `$CODEX_HOME/auth.json`
 - `codex-switch`'s own state and encrypted vault
 
-When Codex reports an incomplete local-project migration, a switch performed
-while Codex is closed may additionally restore `threads.project_id` through the
-official App Server and update the backed-up desktop migration checkpoint. It
-does not copy projects or sessions into per-account homes.
+When Codex reports an incomplete or missing local-project projection, a switch
+performed while Codex is closed may additionally restore the credential-free
+desktop project catalog, restore `threads.project_id` through the official App
+Server, and update the backed-up desktop migration checkpoint. It does not copy
+projects or sessions into per-account homes.
 
 An account-usage query may persist an officially refreshed credential generation
 back to the encrypted vault. If the queried profile is active, the same

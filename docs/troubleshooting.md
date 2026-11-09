@@ -55,27 +55,31 @@ ordinary switching.
 
 ## Projects are empty or change after switching accounts
 
-Recent Codex releases store projects and thread-to-project membership
-separately. A desktop migration can create the projects successfully while
-leaving every canonical thread `projectId` empty. Inspect the redacted status:
+Recent Codex releases store the desktop project catalog and canonical
+thread-to-project membership separately. An account change can leave the
+canonical projects intact while removing the desktop projection, or a migration
+can leave every canonical thread `projectId` empty. Inspect the redacted status:
 
 ```bash
 codex-switch project status
 codex-switch doctor
 ```
 
-If repair is needed, fully quit Codex/ChatGPT and run:
+Normal `codex-switch account use <alias>` repairs both states automatically when
+Codex is closed. If a prior manual login already caused drift, fully quit
+Codex/ChatGPT and run once:
 
 ```bash
 codex-switch project repair
 ```
 
-The repair uses Codex App Server rather than editing its SQLite database. It
-keeps the desktop's legacy project map, verifies the new project IDs, applies
-each assignment idempotently, and backs up `.codex-global-state.json` before
-advancing the migration checkpoint. Use `--force` to reapply all retained
-assignments after a later Codex regression. Avoid `--allow-running` unless the
-desktop cannot be stopped; its in-memory state may overwrite the repair.
+The repair restores the desktop projection from the shared catalog (or the most
+recent codex-switch backup), then uses Codex App Server rather than editing its
+SQLite database. It verifies the new project IDs, applies each assignment
+idempotently, and backs up `.codex-global-state.json` before every replacement.
+Use `--force` to reapply all retained assignments after a later Codex regression.
+Avoid `--allow-running` unless the desktop cannot be stopped; its in-memory
+state may overwrite the repair.
 
 ## Active account is unmanaged
 

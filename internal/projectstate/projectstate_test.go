@@ -101,6 +101,83 @@ func TestRepairIsNoopAfterMigration(t *testing.T) {
 	}
 }
 
+func TestRepairRestoresDesktopProjectionFromSharedCatalog(t *testing.T) {
+	homePath := t.TempDir()
+	appPath := t.TempDir()
+	writeGlobalState(t, homePath)
+	document, err := load(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := document.markMigrated(); err != nil {
+		t.Fatal(err)
+	}
+	service := Service{
+		Home:        codexhome.Home{Path: homePath},
+		CatalogPath: filepath.Join(appPath, "project-catalog.v1.json"),
+	}
+	result, err := service.Repair(context.Background(), true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.CatalogUpdated {
+		t.Fatalf("shared catalog was not captured: %#v", result)
+	}
+	removeProjection(t, homePath)
+
+	inspection, err := service.Inspect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !inspection.ProjectionMissing || !inspection.NeedsRepair || inspection.Projects != 1 || inspection.DesktopProjects != 0 || inspection.CatalogProjects != 1 {
+		t.Fatalf("missing projection was not detected: %#v", inspection)
+	}
+	result, err = service.Repair(context.Background(), true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Repaired || !result.ProjectionRestored || result.AssignmentsRepaired != 0 {
+		t.Fatalf("projection was not restored: %#v", result)
+	}
+	after, err := service.Inspect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.ProjectionMissing || after.DesktopProjects != 1 || after.DesktopAssignments != 2 {
+		t.Fatalf("restored projection is incomplete: %#v", after)
+	}
+}
+
+func TestRepairRecoversProjectionFromTimestampedBackup(t *testing.T) {
+	homePath := t.TempDir()
+	writeGlobalState(t, homePath)
+	document, err := load(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := document.markMigrated(); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(homePath, globalStateName)
+	healthy, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicfile.Write(statePath+".codex-switch.bak.99999999T999999.000000000Z", healthy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	removeProjection(t, homePath)
+
+	service := Service{Home: codexhome.Home{Path: homePath}, CatalogPath: filepath.Join(t.TempDir(), "project-catalog.v1.json")}
+	result, err := service.Repair(context.Background(), true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.ProjectionRestored || !result.CatalogUpdated || result.Projects != 1 {
+		t.Fatalf("backup recovery failed: %#v", result)
+	}
+}
+
 func TestProjectStateHelperProcess(t *testing.T) {
 	if os.Getenv("GO_WANT_PROJECT_STATE_HELPER") != "1" {
 		return
@@ -175,5 +252,30 @@ func writeGlobalState(t *testing.T, homePath string) {
 	}
 	if err := atomicfile.Write(filepath.Join(homePath, globalStateName), append(data, '\n'), 0o600); err != nil {
 		t.Fatal(fmt.Errorf("write test global state: %w", err))
+	}
+}
+
+func removeProjection(t *testing.T, homePath string) {
+	t.Helper()
+	statePath := filepath.Join(homePath, globalStateName)
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range projectionKeys {
+		if key != "app-server-projects-migration-by-host" {
+			delete(raw, key)
+		}
+	}
+	data, err = json.Marshal(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicfile.Write(statePath, append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -69,8 +69,10 @@ Usage querying initializes `codex app-server` and calls:
 - `account/rateLimits/read`
 - `account/usage/read`
 
-Project migration repair was added for Codex CLI `0.167.0`. It negotiates the
-App Server's `experimentalApi` capability and uses `project/list` plus
+Project migration repair was added for Codex CLI `0.167.0`. It preserves the
+desktop's credential-free project projection independently of the active
+account. When canonical assignments also need repair, it negotiates the App
+Server's `experimentalApi` capability and uses `project/list` plus
 `thread/metadata/update` with `projectId`. Older clients are unaffected unless
 their desktop state explicitly reports a pending App Server project migration;
 in that case the command fails with an update hint instead of editing SQLite
